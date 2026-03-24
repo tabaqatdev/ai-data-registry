@@ -36,10 +36,10 @@ test -f "$RESOLVED_PATH"
 ## Step 2 — Check DuckDB is installed
 
 ```bash
-command -v duckdb || pixi run duckdb --version
+pixi run duckdb --version
 ```
 
-If not found in PATH, try `pixi run duckdb` (project provides DuckDB via pixi).
+This project provides DuckDB via pixi. If `pixi run duckdb` fails, fall back to system `duckdb --version`.
 If neither works, delegate to the **duckdb-install** skill and then continue.
 
 ## Step 3 — Validate the database
@@ -102,7 +102,7 @@ Based on their choice:
 **Option 1:**
 ```bash
 STATE_DIR=".duckdb-skills"
-mkdir -p "$STATE_DIR"
+pixi run python -c "import pathlib; pathlib.Path('$STATE_DIR').mkdir(parents=True, exist_ok=True)"
 ```
 Then ask: *"Would you like to gitignore `.duckdb-skills/`?"* If yes:
 ```bash
@@ -114,7 +114,7 @@ echo '.duckdb-skills/' >> .gitignore
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 PROJECT_ID="$(echo "$PROJECT_ROOT" | tr '/' '-')"
 STATE_DIR="$HOME/.duckdb-skills/$PROJECT_ID"
-mkdir -p "$STATE_DIR"
+pixi run python -c "import pathlib; pathlib.Path('$STATE_DIR').mkdir(parents=True, exist_ok=True)"
 ```
 
 ## Step 6 — Append to the state file

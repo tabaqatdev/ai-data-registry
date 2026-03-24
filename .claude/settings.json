@@ -22,7 +22,6 @@
       "Bash(stat *)",
       "Bash(mv *)",
       "Bash(curl *)",
-      "Bash(flock *)",
       "Bash(echo *)",
       "Read",
       "Write",

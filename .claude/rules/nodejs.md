@@ -22,4 +22,5 @@ paths:
 ## Playwright Skill
 - Skill directory: `.claude/skills/playwright-skill/`
 - Setup: `cd .claude/skills/playwright-skill && pixi run pnpm run setup`
-- Execute: `cd .claude/skills/playwright-skill && pixi run node run.js /tmp/test.js`
+- Execute: `cd .claude/skills/playwright-skill && pixi run node run.js ../../.tmp/test.js`
+- Temp files go in `.tmp/` (gitignored, cross-platform)

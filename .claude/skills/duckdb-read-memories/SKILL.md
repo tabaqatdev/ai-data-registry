@@ -19,7 +19,8 @@ Pass `--here` as a second argument (`$1`) to scope the search to the current pro
 
 ```bash
 ALL_PROJECTS="$HOME/.claude/projects/*/*.jsonl"
-CURRENT_PROJECT="$HOME/.claude/projects/$(echo "$PWD" | sed 's|[/_]|-|g')/*.jsonl"
+# Cross-platform path-to-ID conversion via Python
+CURRENT_PROJECT="$HOME/.claude/projects/$(pixi run python -c "import pathlib,re; print(re.sub(r'[/\\\\_]', '-', str(pathlib.Path.cwd())))")/*.jsonl"
 ```
 
 Use `$CURRENT_PROJECT` if `$1` is `--here`, otherwise use `$ALL_PROJECTS`.
@@ -53,10 +54,10 @@ Resolve the state directory first:
 STATE_DIR=""
 test -d .duckdb-skills && STATE_DIR=".duckdb-skills"
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-PROJECT_ID="$(echo "$PROJECT_ROOT" | tr '/' '-')"
+PROJECT_ID="$(pixi run python -c "import pathlib,re; print(re.sub(r'[/\\\\_]', '-', '$PROJECT_ROOT'))")"
 test -d "$HOME/.duckdb-skills/$PROJECT_ID" && STATE_DIR="$HOME/.duckdb-skills/$PROJECT_ID"
 # Fall back to project-local if neither exists
-test -z "$STATE_DIR" && STATE_DIR=".duckdb-skills" && mkdir -p "$STATE_DIR"
+test -z "$STATE_DIR" && STATE_DIR=".duckdb-skills" && pixi run python -c "import pathlib; pathlib.Path('$STATE_DIR').mkdir(exist_ok=True)"
 ```
 
 ```bash
@@ -84,7 +85,7 @@ duckdb "$STATE_DIR/memories.duckdb" -c "FROM memories WHERE content ILIKE '%<nar
 Clean up when done:
 
 ```bash
-rm -f "$STATE_DIR/memories.duckdb"
+pixi run python -c "import pathlib; pathlib.Path('$STATE_DIR/memories.duckdb').unlink(missing_ok=True)"
 ```
 
 ## Step 4 — Internalize

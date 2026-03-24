@@ -16,13 +16,24 @@ Each extension argument has the form `name` or `name@repo`.
 
 ## Step 1 — Locate DuckDB
 
+This project provides DuckDB via pixi. Try `pixi run duckdb` first:
+
 ```bash
-DUCKDB=$(command -v duckdb)
+pixi run duckdb --version
 ```
 
-If not found, tell the user:
+If pixi is available and DuckDB is in `pixi.toml`, use `pixi run duckdb` for all subsequent commands.
 
-> **DuckDB is not installed.** Install it first with one of:
+If pixi is not available, fall back to system DuckDB:
+
+```bash
+duckdb --version
+```
+
+If neither works, tell the user:
+
+> **DuckDB is not installed.** Install it with one of:
+> - **Via pixi (recommended):** `pixi add duckdb` in the workspace
 > - macOS:   `brew install duckdb`
 > - Linux:   `curl -fsSL https://install.duckdb.org | sh`
 > - Windows: `winget install DuckDB.cli`

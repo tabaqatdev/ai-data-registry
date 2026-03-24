@@ -28,16 +28,30 @@ Geospatial data processing template with a full AI-powered development ecosystem
 2. Clone your new repo
 3. Run the setup script:
    ```bash
+   # macOS / Linux
    ./setup.sh
+
+   # Windows (PowerShell 7+)
+   .\setup.ps1
    ```
 4. Or edit `template-config.json` and push — GitHub Actions will auto-configure.
+
+### Install Pixi
+
+If you don't have pixi installed:
+
+| Platform | Command |
+|----------|---------|
+| **macOS** (Homebrew) | `brew install pixi` |
+| **macOS / Linux** | `curl -fsSL https://pixi.sh/install.sh \| bash` |
+| **Windows** (winget) | `winget install prefix-dev.pixi` |
+| **Windows** (PowerShell) | `iwr -useb https://pixi.sh/install.ps1 \| iex` |
+
+See [pixi.sh](https://pixi.sh) for more options.
 
 ### Manual Setup
 
 ```bash
-# Install pixi (if not installed)
-curl -fsSL https://pixi.sh/install.sh | bash
-
 # Install dependencies
 pixi install
 

@@ -12,3 +12,6 @@ CLAUDE.local.md
 # Playwright skill node_modules (installed at runtime)
 .claude/skills/playwright-skill/node_modules/
 .claude/skills/playwright-skill/.temp-execution-*
+
+# Project temp directory (cross-platform scratch space)
+.tmp/

@@ -2,10 +2,11 @@
 name: playwright-skill
 description: >
   Complete browser automation with Playwright. Auto-detects dev servers, writes
-  clean test scripts to /tmp. Test pages, fill forms, take screenshots, check
-  responsive design, validate UX, test login flows, check links, automate any
-  browser task. Use when user wants to test websites, automate browser
-  interactions, validate web functionality, or perform any browser-based testing.
+  clean test scripts to the project .tmp/ directory. Test pages, fill forms,
+  take screenshots, check responsive design, validate UX, test login flows,
+  check links, automate any browser task. Use when user wants to test websites,
+  automate browser interactions, validate web functionality, or perform any
+  browser-based testing.
 allowed-tools: Bash, Read, Write, Glob
 ---
 
@@ -14,6 +15,8 @@ The skill directory is `.claude/skills/playwright-skill` in this project.
 Set: `SKILL_DIR=".claude/skills/playwright-skill"`
 
 **Environment:** Node.js is provided by pixi (`pixi run node`). Playwright runs via the skill's `run.js` executor.
+
+**Temp directory:** Use `.tmp/` at the project root for all scratch files (scripts, screenshots). This directory is gitignored and works cross-platform.
 
 # Playwright Browser Automation
 
@@ -24,6 +27,9 @@ General-purpose browser automation skill. Write custom Playwright code for any a
 ```bash
 # Ensure Node.js is available via pixi (root pixi.toml has nodejs)
 pixi run node --version
+
+# Create project temp directory
+pixi run python -c "import pathlib; pathlib.Path('.tmp').mkdir(exist_ok=True)"
 
 # Install Playwright and Chromium
 cd .claude/skills/playwright-skill && pixi run pnpm run setup
@@ -39,7 +45,7 @@ cd .claude/skills/playwright-skill && pixi run pnpm run setup
    - If **multiple servers found**: Ask user which one
    - If **no servers found**: Ask for URL or offer to help start dev server
 
-2. **Write scripts to /tmp** — NEVER write test files to skill directory; always use `/tmp/playwright-test-*.js`
+2. **Write scripts to `.tmp/`** — NEVER write test files to skill directory; always use `.tmp/playwright-test-*.js`
 
 3. **Use visible browser by default** — Always use `headless: false` unless user specifically requests headless
 
@@ -51,35 +57,39 @@ cd .claude/skills/playwright-skill && pixi run pnpm run setup
 # Step 1: Detect dev servers
 cd $SKILL_DIR && pixi run node -e "require('./lib/helpers').detectDevServers().then(s => console.log(JSON.stringify(s)))"
 
-# Step 2: Write test to /tmp (see patterns below)
+# Step 2: Ensure .tmp/ exists and write test script there
+pixi run python -c "import pathlib; pathlib.Path('.tmp').mkdir(exist_ok=True)"
 
 # Step 3: Execute from skill directory
-cd $SKILL_DIR && pixi run node run.js /tmp/playwright-test-page.js
+cd $SKILL_DIR && pixi run node run.js ../../.tmp/playwright-test-page.js
 ```
 
 ## Common Patterns
 
 ### Test a Page
 ```javascript
-// /tmp/playwright-test-page.js
+// Save to: .tmp/playwright-test-page.js
 const { chromium } = require('playwright');
+const path = require('path');
 const TARGET_URL = 'http://localhost:3001';
+const TMP_DIR = path.resolve(__dirname, '..', '..', '.tmp');
 
 (async () => {
   const browser = await chromium.launch({ headless: false });
   const page = await browser.newPage();
   await page.goto(TARGET_URL);
   console.log('Page loaded:', await page.title());
-  await page.screenshot({ path: '/tmp/screenshot.png', fullPage: true });
+  await page.screenshot({ path: path.join(TMP_DIR, 'screenshot.png'), fullPage: true });
   await browser.close();
 })();
 ```
 
 ### Responsive Design Test
 ```javascript
-// /tmp/playwright-test-responsive.js
 const { chromium } = require('playwright');
+const path = require('path');
 const TARGET_URL = 'http://localhost:3001';
+const TMP_DIR = path.resolve(__dirname, '..', '..', '.tmp');
 
 (async () => {
   const browser = await chromium.launch({ headless: false, slowMo: 100 });
@@ -92,7 +102,7 @@ const TARGET_URL = 'http://localhost:3001';
   for (const vp of viewports) {
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await page.goto(TARGET_URL);
-    await page.screenshot({ path: `/tmp/${vp.name.toLowerCase()}.png`, fullPage: true });
+    await page.screenshot({ path: path.join(TMP_DIR, `${vp.name.toLowerCase()}.png`), fullPage: true });
     console.log(`${vp.name}: done`);
   }
   await browser.close();
@@ -101,7 +111,6 @@ const TARGET_URL = 'http://localhost:3001';
 
 ### Login Flow Test
 ```javascript
-// /tmp/playwright-test-login.js
 const { chromium } = require('playwright');
 const TARGET_URL = 'http://localhost:3001';
 
@@ -120,7 +129,6 @@ const TARGET_URL = 'http://localhost:3001';
 
 ### Form Submission
 ```javascript
-// /tmp/playwright-test-form.js
 const { chromium } = require('playwright');
 const TARGET_URL = 'http://localhost:3001';
 
@@ -165,10 +173,11 @@ const { chromium } = require('playwright');
 
 ```bash
 cd $SKILL_DIR && pixi run node run.js "
+const path = require('path');
 const browser = await chromium.launch({ headless: false });
 const page = await browser.newPage();
 await page.goto('http://localhost:3001');
-await page.screenshot({ path: '/tmp/quick.png', fullPage: true });
+await page.screenshot({ path: path.resolve('../../.tmp/quick.png'), fullPage: true });
 await browser.close();
 "
 ```
@@ -189,14 +198,14 @@ const data = await helpers.extractTableData(page, 'table.results');
 
 ```bash
 PW_HEADER_NAME=X-Automated-By PW_HEADER_VALUE=playwright-skill \
-  cd $SKILL_DIR && pixi run node run.js /tmp/my-script.js
+  cd $SKILL_DIR && pixi run node run.js ../../.tmp/my-script.js
 ```
 
 ## Configuration
 - **Headless:** `false` (visible browser by default)
 - **Slow Motion:** `100ms` for visibility
 - **Timeout:** `30s`
-- **Screenshots:** Saved to `/tmp/`
+- **Screenshots:** Saved to `.tmp/` (gitignored)
 
 ## Advanced Usage
 See @API_REFERENCE.md for comprehensive documentation on selectors, network interception, authentication, visual regression, mobile emulation, and performance testing.
@@ -208,7 +217,7 @@ See @API_REFERENCE.md for comprehensive documentation on selectors, network inte
 cd $SKILL_DIR && pixi run pnpm run setup
 
 # Module not found — always run from skill directory via run.js
-cd $SKILL_DIR && pixi run node run.js /tmp/my-test.js
+cd $SKILL_DIR && pixi run node run.js ../../.tmp/my-test.js
 
 # Install all browsers (not just Chromium)
 cd $SKILL_DIR && pixi run pnpm run install-all-browsers

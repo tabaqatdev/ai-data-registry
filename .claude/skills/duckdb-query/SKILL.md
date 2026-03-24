@@ -43,10 +43,10 @@ If the state file exists but any ATTACH in it fails, warn the user and fall back
 ## Step 2 — Check DuckDB is installed
 
 ```bash
-command -v duckdb || pixi run duckdb --version
+pixi run duckdb --version
 ```
 
-If not found in PATH, try `pixi run duckdb` (project provides DuckDB via pixi).
+This project provides DuckDB via pixi. If `pixi run duckdb` fails, fall back to system `duckdb --version`.
 If neither works, delegate to the **duckdb-install** skill and then continue.
 
 ## Step 3 — Generate SQL if needed

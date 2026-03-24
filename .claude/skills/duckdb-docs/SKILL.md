@@ -17,10 +17,10 @@ Follow these steps in order.
 ## Step 1 — Check DuckDB is installed
 
 ```bash
-command -v duckdb || pixi run duckdb --version
+pixi run duckdb --version
 ```
 
-If not found in PATH, try `pixi run duckdb` (project provides DuckDB via pixi).
+This project provides DuckDB via pixi. If `pixi run duckdb` fails, fall back to system `duckdb --version`.
 If neither works, delegate to the **duckdb-install** skill and then continue.
 
 ## Step 2 — Ensure required extensions are installed
@@ -78,20 +78,23 @@ The cache lives at `$HOME/.duckdb/docs/CACHE_FILENAME` (where `CACHE_FILENAME` i
 First, ensure the directory exists:
 
 ```bash
-mkdir -p "$HOME/.duckdb/docs"
+pixi run python -c "import pathlib; pathlib.Path.home().joinpath('.duckdb', 'docs').mkdir(parents=True, exist_ok=True)"
 ```
 
 Then check whether the cache file exists and is fresh (≤2 days old):
 
 ```bash
 CACHE_FILE="$HOME/.duckdb/docs/CACHE_FILENAME"
-if [ -f "$CACHE_FILE" ]; then
-    MTIME=$(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE")
-    CACHE_AGE_DAYS=$(( ( $(date +%s) - MTIME ) / 86400 ))
-else
-    CACHE_AGE_DAYS=999
-fi
-echo "Cache age: $CACHE_AGE_DAYS days"
+pixi run python -c "
+import pathlib, time
+cache = pathlib.Path.home() / '.duckdb' / 'docs' / 'CACHE_FILENAME'
+if cache.exists():
+    age_days = int((time.time() - cache.stat().st_mtime) / 86400)
+else:
+    age_days = 999
+print(f'Cache age: {age_days} days')
+print(f'CACHE_AGE_DAYS={age_days}')
+"
 ```
 
 **If `CACHE_AGE_DAYS` ≤ 2** → skip to Step 5.

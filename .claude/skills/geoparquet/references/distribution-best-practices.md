@@ -255,8 +255,8 @@ pixi run gpio check all output.parquet
 ## Complete Distribution Pipeline
 
 ```bash
-#!/bin/bash
 # Full optimization pipeline for distribution-ready GeoParquet
+# Best run as pixi tasks (see data-pipeline skill) for cross-platform support.
 
 INPUT="raw.parquet"
 SORTED="tmp_sorted.parquet"
@@ -281,5 +281,5 @@ pixi run gpio publish stac "$OPTIMIZED" --output stac_catalog/
 pixi run gpio publish s3 "$OPTIMIZED" --bucket my-bucket --prefix data/
 
 # Cleanup
-rm -f "$SORTED"
+pixi run python -c "import pathlib; pathlib.Path('$SORTED').unlink(missing_ok=True)"
 ```

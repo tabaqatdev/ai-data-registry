@@ -24,7 +24,6 @@ live here:
 ```
 .duckdb-skills/
   state.sql      # Initialization script sourced by every DuckDB session
-  .lock          # flock lock file for atomic updates
 ```
 
 ### Resolution
@@ -44,7 +43,7 @@ Create the state directory and seed `state.sql` with core extensions:
 STATE_DIR=".duckdb-skills"
 STATE_FILE="$STATE_DIR/state.sql"
 
-mkdir -p "$STATE_DIR"
+pixi run python -c "import pathlib; pathlib.Path('$STATE_DIR').mkdir(exist_ok=True)"
 
 cat > "$STATE_FILE" << 'SQL'
 -- =============================================================
@@ -99,24 +98,28 @@ SQL
 
 ---
 
-## Atomic State Updates (File Locking)
+## Atomic State Updates
 
 When appending configuration to state.sql (credentials, extra extensions,
-ATTACHes), use `flock` to prevent concurrent writes from corrupting the file:
+ATTACHes), use a check-then-append pattern. Use `pixi run python` for the
+append to ensure cross-platform compatibility (works on macOS, Linux, and Windows):
 
 ```bash
 STATE_DIR=".duckdb-skills"
 
-(
-  flock 9
-  if ! grep -q "LOAD json;" "$STATE_DIR/state.sql"; then
-    cat >> "$STATE_DIR/state.sql" << 'SQL'
-
+pixi run python -c "
+import pathlib
+state = pathlib.Path('$STATE_DIR/state.sql')
+content = state.read_text()
+if 'LOAD json;' not in content:
+    state.write_text(content + '''
 -- JSON extension (added by duckdb-state)
 INSTALL json; LOAD json;
-SQL
-  fi
-) 9>"$STATE_DIR/.lock"
+''')
+    print('Added json extension to state.sql')
+else:
+    print('json extension already in state.sql')
+"
 ```
 
 ### Pattern: Add a credential block
@@ -124,18 +127,18 @@ SQL
 ```bash
 STATE_DIR=".duckdb-skills"
 
-(
-  flock 9
-  if ! grep -q "SET s3_region" "$STATE_DIR/state.sql"; then
-    cat >> "$STATE_DIR/state.sql" << 'SQL'
-
+pixi run python -c "
+import pathlib
+state = pathlib.Path('$STATE_DIR/state.sql')
+content = state.read_text()
+if 'SET s3_region' not in content:
+    state.write_text(content + '''
 -- S3 credentials (added by duckdb-state)
-SET s3_region = 'us-east-1';
-SET s3_access_key_id = getenv('AWS_ACCESS_KEY_ID');
-SET s3_secret_access_key = getenv('AWS_SECRET_ACCESS_KEY');
-SQL
-  fi
-) 9>"$STATE_DIR/.lock"
+SET s3_region = '\''us-east-1'\'';
+SET s3_access_key_id = getenv('\''AWS_ACCESS_KEY_ID'\'');
+SET s3_secret_access_key = getenv('\''AWS_SECRET_ACCESS_KEY'\'');
+''')
+"
 ```
 
 ### Pattern: Add GCS credentials
@@ -143,17 +146,17 @@ SQL
 ```bash
 STATE_DIR=".duckdb-skills"
 
-(
-  flock 9
-  if ! grep -q "SET gcs_" "$STATE_DIR/state.sql"; then
-    cat >> "$STATE_DIR/state.sql" << 'SQL'
-
+pixi run python -c "
+import pathlib
+state = pathlib.Path('$STATE_DIR/state.sql')
+content = state.read_text()
+if 'SET gcs_' not in content:
+    state.write_text(content + '''
 -- GCS credentials (added by duckdb-state)
-SET gcs_access_key_id = getenv('GCS_ACCESS_KEY_ID');
-SET gcs_secret = getenv('GCS_SECRET');
-SQL
-  fi
-) 9>"$STATE_DIR/.lock"
+SET gcs_access_key_id = getenv('\''GCS_ACCESS_KEY_ID'\'');
+SET gcs_secret = getenv('\''GCS_SECRET'\'');
+''')
+"
 ```
 
 ### Pattern: Add Azure credentials
@@ -161,20 +164,20 @@ SQL
 ```bash
 STATE_DIR=".duckdb-skills"
 
-(
-  flock 9
-  if ! grep -q "LOAD azure;" "$STATE_DIR/state.sql"; then
-    cat >> "$STATE_DIR/state.sql" << 'SQL'
-
+pixi run python -c "
+import pathlib
+state = pathlib.Path('$STATE_DIR/state.sql')
+content = state.read_text()
+if 'LOAD azure;' not in content:
+    state.write_text(content + '''
 -- Azure credentials (added by duckdb-state)
 INSTALL azure; LOAD azure;
 CREATE SECRET azure_secret (
   TYPE AZURE,
-  CONNECTION_STRING getenv('AZURE_STORAGE_CONNECTION_STRING')
+  CONNECTION_STRING getenv('\''AZURE_STORAGE_CONNECTION_STRING'\'')
 );
-SQL
-  fi
-) 9>"$STATE_DIR/.lock"
+''')
+"
 ```
 
 ---
@@ -210,7 +213,7 @@ If state.sql becomes corrupt or needs a clean slate:
 
 ```bash
 STATE_DIR=".duckdb-skills"
-rm -f "$STATE_DIR/state.sql" "$STATE_DIR/.lock"
+rm -f "$STATE_DIR/state.sql"
 # Then re-run initialization (see above)
 ```
 

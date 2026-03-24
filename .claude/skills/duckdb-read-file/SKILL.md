@@ -28,7 +28,13 @@ Determine whether the input is **local** or **remote**:
 ### Local files
 
 ```bash
-find "$PWD" -name "$0" -not -path '*/.git/*' 2>/dev/null
+# Cross-platform file search using pixi run python
+pixi run python -c "
+import pathlib, sys
+matches = [p for p in pathlib.Path('.').rglob('$0') if '.git' not in p.parts]
+for m in matches:
+    print(m.resolve())
+"
 ```
 
 - **Zero results** → tell the user the file was not found and stop.
@@ -170,10 +176,15 @@ Some readers require core extensions. If the read fails with a missing extension
 | All others | built-in |
 
 ```bash
-duckdb :memory: -c "INSTALL <extension>;"
-grep -q "LOAD <extension>;" "$STATE_DIR/state.sql" 2>/dev/null || sed -i '' '1i\
-LOAD <extension>;
-' "$STATE_DIR/state.sql"
+pixi run duckdb :memory: -c "INSTALL <extension>;"
+# Cross-platform: prepend LOAD to state.sql via Python
+pixi run python -c "
+import pathlib
+state = pathlib.Path('$STATE_DIR/state.sql')
+content = state.read_text()
+if 'LOAD <extension>;' not in content:
+    state.write_text('LOAD <extension>;\n' + content)
+"
 ```
 
 ## Step 4 — Read the file

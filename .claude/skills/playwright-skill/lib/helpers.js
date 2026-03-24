@@ -79,8 +79,12 @@ async function extractTexts(page, selector) {
 }
 
 async function takeScreenshot(page, name, options = {}) {
+  const fs = require('fs');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const filename = `/tmp/${name}-${timestamp}.png`;
+  // Use project .tmp/ directory (gitignored, cross-platform)
+  const tmpDir = path.resolve(__dirname, '..', '..', '..', '.tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const filename = path.join(tmpDir, `${name}-${timestamp}.png`);
   await page.screenshot({ path: filename, fullPage: options.fullPage !== false, ...options });
   console.log(`Screenshot saved: ${filename}`);
   return filename;

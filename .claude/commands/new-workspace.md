@@ -69,7 +69,10 @@ pixi workspace register list  # Verify
 
 8. **Add .gitignore for pixi environments** (if not inherited from root)
 ```bash
-echo -e "# pixi environments\n.pixi/*\n!.pixi/config.toml" > <name>/.gitignore
+pixi run python -c "
+import pathlib
+pathlib.Path('<name>/.gitignore').write_text('# pixi environments\n.pixi/*\n!.pixi/config.toml\n')
+"
 ```
 
 9. **Show the final pixi.toml for review**
