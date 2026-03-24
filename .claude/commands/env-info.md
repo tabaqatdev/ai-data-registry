@@ -1,0 +1,24 @@
+---
+description: Show current pixi environment info, installed packages, and shared tool versions
+---
+## Environment Info
+
+!`pixi info`
+
+## Installed Packages
+
+!`pixi list`
+
+## Shared Tool Versions
+
+!`pixi run duckdb --version 2>/dev/null || echo "DuckDB not available"`
+!`pixi run gdal --version 2>/dev/null || echo "GDAL not available"`
+!`pixi run gpio --version 2>/dev/null || echo "gpio (geoparquet-io) not available — install with: pixi add --pypi geoparquet-io"`
+!`pixi run python --version 2>/dev/null || echo "Python not available"`
+
+## Dependency Tree
+
+!`pixi tree`
+
+Summarize the environment state: Python version, key package versions (GDAL, DuckDB, gpio), platform, and any version conflicts.
+For deeper diagnostics, use the **env-check** skill.

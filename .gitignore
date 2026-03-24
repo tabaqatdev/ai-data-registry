@@ -1,0 +1,14 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Claude Code local overrides
+CLAUDE.local.md
+.claude/settings.local.json
+
+# DuckDB skills state (created at runtime)
+.duckdb-skills/
+
+# Playwright skill node_modules (installed at runtime)
+.claude/skills/playwright-skill/node_modules/
+.claude/skills/playwright-skill/.temp-execution-*
