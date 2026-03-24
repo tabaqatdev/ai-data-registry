@@ -137,6 +137,8 @@ if 'SET s3_region' not in content:
 SET s3_region = '\''us-east-1'\'';
 SET s3_access_key_id = getenv('\''AWS_ACCESS_KEY_ID'\'');
 SET s3_secret_access_key = getenv('\''AWS_SECRET_ACCESS_KEY'\'');
+-- Use path-style for buckets with dots (e.g. source.coop) to avoid SSL issues
+SET s3_url_style = '\''path'\'';
 ''')
 "
 ```

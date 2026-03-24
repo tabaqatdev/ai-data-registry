@@ -10,22 +10,32 @@ Follow the workspace rules in `.claude/rules/workspaces.md`.
 
 1. **Parse arguments** — extract workspace name and language from `$ARGUMENTS`
 
-2. **Create and initialize the workspace**
+2. **Create and initialize the workspace** (from project root)
 ```bash
-mkdir -p <name>
+mkdir <name>
 cd <name>
 pixi init . --channel conda-forge --platform osx-arm64 --platform linux-64 --platform win-64
+cd ..
 ```
 
-3. **Add the language runtime**
-   - python: `pixi add python`
-   - go: `pixi add go`
-   - node: `pixi add nodejs`
-   - rust: `pixi add rust`
+3. **Register in root workspace**
+```bash
+pixi workspace register --name <name> --path <name>
+```
 
-4. **Add workspace-specific dependencies** (ask the user what they need)
+4. **Add the language runtime** (using -w flag from root)
+   - python: `pixi add -w <name> python`
+   - go: `pixi add -w <name> go`
+   - node: `pixi add -w <name> nodejs`
+   - rust: `pixi add -w <name> rust`
 
-5. **Set up basic tasks in pixi.toml**
+5. **Add workspace-specific dependencies** (ask the user what they need)
+```bash
+pixi add -w <name> <dep1> <dep2>
+pixi add -w <name> --pypi <pypi-dep>
+```
+
+6. **Set up basic tasks in the workspace pixi.toml**
 
 For Python workspaces:
 ```toml
@@ -51,20 +61,13 @@ build = "pnpm run build"
 test = "pnpm run test"
 ```
 
-6. **Add platform-specific deps if needed**
+7. **Add platform-specific deps if needed**
 ```toml
 [target.unix.dependencies]
 # Unix-only deps here
 
 [target.win-64.dependencies]
 # Windows-only deps here
-```
-
-7. **Register the workspace in the root** (from project root)
-```bash
-cd ..
-pixi workspace register --name <name> --path <name>
-pixi workspace register list  # Verify
 ```
 
 8. **Add .gitignore for pixi environments** (if not inherited from root)
@@ -79,7 +82,8 @@ pathlib.Path('<name>/.gitignore').write_text('# pixi environments\n.pixi/*\n!.pi
 
 ## Notes
 - Shared tools (DuckDB, GDAL, gpio, pnpm) are available from the root — no need to add them per workspace unless a specific version is needed
-- Run workspace tasks: `cd <name> && pixi run <task>` or `pixi run --manifest-path <name>/pixi.toml <task>`
+- Run workspace tasks from root: `pixi run -w <name> <task>`
 - Use `env = { KEY = "$CONDA_PREFIX/..." }` in tasks to reference the environment prefix
 - Use `depends-on` to chain tasks within the workspace
 - Use `[target.<platform>.dependencies]` for platform-specific deps
+- Single `pixi.lock` at root covers all workspaces — do NOT expect per-workspace lock files

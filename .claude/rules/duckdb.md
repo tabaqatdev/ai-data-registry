@@ -30,6 +30,25 @@ COPY (
 ```
 Then validate: `pixi run gpio check all output.parquet`
 
+## Common Pitfalls
+- **INTEGER vs DATE comparison**: DuckDB does NOT auto-cast integers to dates. If a column stores dates as integers (e.g., `20260324`), cast explicitly before comparing:
+  ```sql
+  -- WRONG: AND SQLDATE >= CURRENT_DATE - INTERVAL '7 days'
+  -- RIGHT: Cast the integer column to a DATE first
+  AND CAST(SQLDATE::VARCHAR AS DATE) >= CURRENT_DATE - INTERVAL '7 days'
+  -- Or use strptime:
+  AND strptime(SQLDATE::VARCHAR, '%Y%m%d')::DATE >= CURRENT_DATE - INTERVAL '7 days'
+  ```
+- **File not found after failed COPY**: If a query fails mid-COPY, the output file won't exist. Subsequent queries referencing it will fail with "No files found". Fix the source query first.
+
+## S3 Access Tips
+- S3 buckets with dots in the name (e.g., `source.coop`) need path-style URLs because virtual-hosted style breaks SSL certificate validation:
+  ```sql
+  SET s3_url_style = 'path';
+  ```
+- Use `CREATE SECRET` with `PROVIDER credential_chain` for automatic credential discovery
+- For public buckets: `SET s3_access_key_id = ''; SET s3_secret_access_key = '';`
+
 ## Session State
 - Use the **duckdb-state** skill to initialize and manage `state.sql` (extensions, credentials, macros)
 - State file location: `.duckdb-skills/state.sql` (project-local) or `~/.duckdb-skills/<project>/state.sql`

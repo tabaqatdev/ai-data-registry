@@ -22,23 +22,10 @@ pixi run gdal info input.gpkg
 pixi run gpio inspect summary input.parquet
 ```
 
-### From inside a workspace
-```bash
-cd <workspace>/
-pixi run <workspace-task>          # Uses workspace pixi.toml
-pixi run python script.py          # Uses workspace Python (if declared)
-```
-
 ### From root targeting a specific workspace
 ```bash
-pixi run --manifest-path <workspace>/pixi.toml <task>
-```
-
-### Using root tools from inside a workspace
-If a workspace doesn't declare its own DuckDB/GDAL/gpio, use the root:
-```bash
-pixi run --manifest-path ./pixi.toml duckdb -csv -c "SELECT 42"
-pixi run --manifest-path ./pixi.toml gdal info input.gpkg
+pixi run -w <workspace> <task>
+pixi add -w <workspace> <pkg>
 ```
 
 ## Never Run Directly

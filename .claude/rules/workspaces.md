@@ -1,19 +1,17 @@
 # Multi-Workspace Rules
 
-This is a multi-workspace mono-repo. Each sub-workspace is a directory with its own `pixi.toml`, registered in the root workspace via `pixi workspace register`.
+This is a multi-workspace mono-repo. Each sub-workspace is a directory with its own `pixi.toml`, registered in the root workspace via `pixi workspace register`. All workspaces share a single `pixi.lock` at the root.
 
 ## Architecture
 
 ```
 ai-data-registry/
 ├── pixi.toml              # Root workspace — shared tools (GDAL, DuckDB, pnpm, Python)
-├── pixi.lock              # Root lock file
+├── pixi.lock              # Single lock file for ALL workspaces
 ├── workspace-a/
-│   ├── pixi.toml          # Sub-workspace — own runtime, deps, tasks
-│   └── pixi.lock
+│   └── pixi.toml          # Sub-workspace — own runtime, deps, tasks
 ├── workspace-b/
-│   ├── pixi.toml
-│   └── pixi.lock
+│   └── pixi.toml
 ```
 
 ## Creating a New Sub-Workspace
@@ -21,17 +19,18 @@ ai-data-registry/
 Use `/project:new-workspace <name> <language>` or manually:
 
 ```bash
-# 1. Create and initialize
-mkdir <name> && cd <name>
+# 1. Create and initialize (from project root)
+mkdir <name>
+cd <name>
 pixi init . --channel conda-forge --platform osx-arm64 --platform linux-64 --platform win-64
-
-# 2. Add language runtime and dependencies
-pixi add python                    # or go, nodejs, rust, etc.
-pixi add <workspace-specific-deps>
-
-# 3. Register in root workspace (from root directory)
 cd ..
+
+# 2. Register in root workspace
 pixi workspace register --name <name> --path <name>
+
+# 3. Add language runtime and dependencies (using -w flag from root)
+pixi add -w <name> python                    # or go, nodejs, rust, etc.
+pixi add -w <name> <workspace-specific-deps>
 
 # 4. Verify registration
 pixi workspace register list
@@ -39,7 +38,6 @@ pixi workspace register list
 
 ## Separation of Concerns
 - **Never** add workspace-specific deps to the root `pixi.toml` — each workspace owns its own
-- **Never** run a workspace task from the root unless it's a root-level orchestration task
 - Each workspace may use a different language (Python, Go, Node, Rust, etc.)
 - Always check the workspace's `pixi.toml` to understand its runtime before making changes
 
@@ -54,31 +52,25 @@ The root `pixi.toml` provides tools available to all workspaces:
 
 ## Running Commands
 
-### In a specific workspace
-```bash
-cd <workspace>/ && pixi run <task>
-# or from root:
-pixi run --manifest-path <workspace>/pixi.toml <task>
-```
-
-### Root shared tools
+### Shared tools (from root)
 ```bash
 pixi run duckdb -csv -c "SELECT 42"
 pixi run gdal info input.gpkg
 ```
 
-### Root tools from inside a workspace
-If workspace doesn't declare its own copy of a tool:
+### Workspace tasks (from root, using -w flag)
 ```bash
-pixi run --manifest-path ../pixi.toml duckdb -csv -c "SELECT 42"
+pixi run -w <workspace> <task>
 ```
 
-## Adding Dependencies
+### Adding dependencies
 ```bash
-cd <workspace>/ && pixi add <pkg>       # Workspace-specific
-cd <workspace>/ && pixi add --pypi <pkg> # PyPI package to workspace
-# Root-level shared:
-pixi add <pkg>                           # From root directory
+# To a specific workspace (from root):
+pixi add -w <workspace> <pkg>
+pixi add -w <workspace> --pypi <pkg>
+
+# To root (shared tools):
+pixi add <pkg>
 ```
 
 ## Advanced Task Patterns

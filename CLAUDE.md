@@ -7,7 +7,7 @@ Multi-workspace project — each workspace has its own `pixi.toml`, language run
 ## Package Manager: Pixi
 - **Config**: Each workspace has its own `pixi.toml`
 - **Root**: `pixi.toml` at project root defines shared tools
-- **Lock file**: `pixi.lock` per workspace (auto-generated, never edit manually)
+- **Lock file**: Single `pixi.lock` at root for all workspaces (auto-generated, never edit manually)
 - **Environments**: `.pixi/envs/` (gitignored)
 - **Channels**: conda-forge
 
@@ -18,22 +18,26 @@ Multi-workspace project — each workspace has its own `pixi.toml`, language run
 ```
 ai-data-registry/
 ├── pixi.toml              # Root — shared tools (GDAL, DuckDB, gpio, pnpm, Python)
-├── pixi.lock
+├── pixi.lock              # Single lock file for ALL workspaces
 ├── .claude/               # AI rules, skills, agents, commands (project-wide)
 ├── workspace-a/
-│   ├── pixi.toml          # Own runtime, deps, tasks, lock
-│   └── pixi.lock
+│   └── pixi.toml          # Own runtime, deps, tasks (NO separate pixi.lock)
 ├── workspace-b/
-│   ├── pixi.toml
-│   └── pixi.lock
+│   └── pixi.toml
 ```
 
 ### Creating a Sub-Workspace
 ```bash
-mkdir my-workspace && cd my-workspace
+# From project root:
+mkdir my-workspace
+cd my-workspace
 pixi init . --channel conda-forge --platform osx-arm64 --platform linux-64 --platform win-64
-pixi add python  # or go, nodejs, rust
-cd .. && pixi workspace register --name my-workspace --path my-workspace
+cd ..
+pixi workspace register --name my-workspace --path my-workspace
+
+# Add deps targeting the workspace (from root):
+pixi add -w my-workspace python
+pixi add -w my-workspace <other-deps>
 ```
 Or use `/project:new-workspace <name> <language>` for guided setup.
 
@@ -51,25 +55,23 @@ Or use `/project:new-workspace <name> <language>` for guided setup.
 
 **Boundaries — NEVER cross these:**
 - Never add workspace-specific deps to root `pixi.toml`
-- Never run a workspace task from root (use `cd <ws>/ && pixi run` or `--manifest-path`)
 - Never assume a workspace uses Python — always check its `pixi.toml` first
 - Never share state between workspaces (each has its own `.pixi/envs/`)
 - GeoParquet is the interchange format when workspaces need to share data
 
 **Running commands:**
 ```bash
-# Shared tools (from root)
+# Shared tools (from root — uses root pixi.toml)
 pixi run duckdb -csv -c "SELECT 42"
 pixi run gdal info input.gpkg
 pixi run gpio inspect summary file.parquet
 
-# Workspace tasks
-cd workspace-a/ && pixi run <task>
-# or from root:
-pixi run --manifest-path workspace-a/pixi.toml <task>
+# Workspace tasks (from root, using -w flag)
+pixi run -w workspace-a <task>
 
-# Root tools from inside a workspace
-pixi run --manifest-path ../pixi.toml duckdb -csv -c "..."
+# Adding deps to a workspace (from root)
+pixi add -w workspace-a <pkg>
+pixi add -w workspace-a --pypi <pkg>
 ```
 
 ---
