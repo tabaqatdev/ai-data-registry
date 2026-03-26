@@ -9,22 +9,38 @@ $ErrorActionPreference = 'Stop'
 
 Write-Host "`nai-data-registry template setup`n" -ForegroundColor Cyan
 
-# --- Check pixi is installed -----------------------------------------------
+# --- Check prerequisites ---------------------------------------------------
 
+# 1. pixi (required)
 if (-not (Get-Command pixi -ErrorAction SilentlyContinue)) {
     Write-Host 'pixi is not installed.' -ForegroundColor Red
     Write-Host ''
     Write-Host 'Install pixi first:'
     Write-Host '  winget install prefix-dev.pixi                              # Windows (winget)'
     Write-Host '  iwr -useb https://pixi.sh/install.ps1 | iex                # Windows (PowerShell)'
-    Write-Host '  curl -fsSL https://pixi.sh/install.sh | bash               # macOS / Linux'
-    Write-Host '  brew install pixi                                           # macOS (Homebrew)'
     Write-Host ''
     Write-Host 'Then re-run: .\setup.ps1'
     exit 1
 }
 
 Write-Host "  pixi found: $(pixi --version)" -ForegroundColor Green
+
+# 2. Claude Code (recommended)
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    $claudeVer = try { claude --version 2>$null } catch { 'installed' }
+    Write-Host "  Claude Code found: $claudeVer" -ForegroundColor Green
+} else {
+    Write-Host '  Claude Code not found (recommended).' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host '  Install Claude Code for AI-assisted development:'
+    Write-Host '    irm https://claude.ai/install.ps1 | iex                   # PowerShell'
+    Write-Host '    winget install Anthropic.ClaudeCode                        # WinGet'
+    Write-Host ''
+    Write-Host '  Note: Windows requires Git for Windows. Install it first if needed.'
+    Write-Host '  Then start it in your project directory with: claude'
+    Write-Host ''
+}
+
 Write-Host ''
 
 # --- Gather info -----------------------------------------------------------

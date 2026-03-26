@@ -19,24 +19,40 @@ NC='\033[0m'
 echo -e "${BOLD}${CYAN}ai-data-registry template setup${NC}"
 echo ""
 
-# --- Check pixi is installed -----------------------------------------------
+# --- Check prerequisites ---------------------------------------------------
 
+# 1. pixi (required)
 if ! command -v pixi &>/dev/null; then
   echo -e "${RED}pixi is not installed.${NC}"
   echo ""
   echo "Install pixi first:"
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    echo "  brew install pixi          # Homebrew"
-  elif [[ "$OSTYPE" == "linux"* ]]; then
-    echo "  curl -fsSL https://pixi.sh/install.sh | bash"
+    echo "  brew install pixi                                  # Homebrew"
   fi
-  echo "  curl -fsSL https://pixi.sh/install.sh | bash   # All platforms"
+  echo "  curl -fsSL https://pixi.sh/install.sh | bash       # macOS / Linux"
   echo ""
   echo "Then re-run: ./setup.sh"
   exit 1
 fi
 
-echo -e "  pixi found: $(pixi --version)"
+echo -e "  ${GREEN}pixi found: $(pixi --version)${NC}"
+
+# 2. Claude Code (recommended)
+if command -v claude &>/dev/null; then
+  echo -e "  ${GREEN}Claude Code found: $(claude --version 2>/dev/null || echo 'installed')${NC}"
+else
+  echo -e "  ${YELLOW}Claude Code not found (recommended).${NC}"
+  echo ""
+  echo "  Install Claude Code for AI-assisted development:"
+  echo "    curl -fsSL https://claude.ai/install.sh | bash   # macOS / Linux"
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    echo "    brew install --cask claude-code                   # macOS (Homebrew)"
+  fi
+  echo ""
+  echo "  Then start it in your project directory with: claude"
+  echo ""
+fi
+
 echo ""
 
 # --- Gather info -----------------------------------------------------------
