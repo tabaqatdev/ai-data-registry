@@ -8,7 +8,10 @@ paths:
 # Pixi Package Manager Rules
 
 ## Dependencies
-- Use `pixi add <pkg>` to add conda dependencies, `pixi add --pypi <pkg>` for PyPI
+- **Always prefer conda-forge** — use `pixi add <pkg>` (goes in `[dependencies]`)
+- **Fall back to PyPI only** when not on conda-forge — use `pixi add --pypi <pkg>` (goes in `[pypi-dependencies]`)
+- Check availability first: `pixi search <pkg>` — if found, use conda; if not, use `--pypi`
+- Never add the same package from both sources
 - Never edit `pixi.lock` manually — it is auto-generated
 - Version constraints: use `>=X.Y,<Z` format (not `*` or pinned exact versions)
 - Channel: conda-forge (do not add other channels without explicit approval)

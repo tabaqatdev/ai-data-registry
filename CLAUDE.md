@@ -85,6 +85,21 @@ pixi add -w workspace-a --pypi <pkg>
 - Never commit `.pixi/` environments (only `.pixi/config.toml` is tracked)
 - `pixi.lock` is committed but treated as binary (see `.gitattributes`)
 
+### Adding Dependencies: conda vs PyPI
+
+**IMPORTANT:** Pixi supports two package sources. Always prefer conda-forge; fall back to PyPI only when the package is not available on conda-forge.
+
+| Source | Command (root) | Command (workspace) | When to use |
+|--------|---------------|---------------------|-------------|
+| **conda-forge** | `pixi add <pkg>` | `pixi add -w <workspace> <pkg>` | Default — native compiled packages, C/C++ libraries, runtimes (Python, Node, GDAL, DuckDB) |
+| **PyPI** | `pixi add --pypi <pkg>` | `pixi add -w <workspace> --pypi <pkg>` | Only when the package does not exist on conda-forge (pure Python packages, niche tools) |
+
+**Decision flow:**
+1. Search conda-forge first: `pixi search <pkg>` — if found, use `pixi add <pkg>`
+2. If not on conda-forge, use `pixi add --pypi <pkg>`
+3. Never mix — do not add the same package from both sources
+4. Conda packages go in `[dependencies]`, PyPI packages go in `[pypi-dependencies]` in `pixi.toml`
+
 ---
 
 ## Reference: Rules (`.claude/rules/`)
