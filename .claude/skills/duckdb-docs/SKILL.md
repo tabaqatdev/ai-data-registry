@@ -26,7 +26,7 @@ If neither works, delegate to the **duckdb-install** skill and then continue.
 ## Step 2 — Ensure required extensions are installed
 
 ```bash
-duckdb :memory: -c "INSTALL httpfs; INSTALL fts;"
+pixi run duckdb :memory: -c "INSTALL httpfs; INSTALL fts;"
 ```
 
 If this fails, report the error and stop.
@@ -102,7 +102,7 @@ print(f'CACHE_AGE_DAYS={age_days}')
 **Otherwise** (stale or missing) → fetch the index:
 
 ```bash
-duckdb -c "
+pixi run duckdb -c "
 LOAD httpfs;
 LOAD fts;
 ATTACH 'REMOTE_URL' AS remote (READ_ONLY);
@@ -116,7 +116,7 @@ Replace `REMOTE_URL` and `CACHE_FILENAME` per Step 3. If the fetch fails (networ
 ## Step 5 — Search the docs
 
 ```bash
-duckdb "$HOME/.duckdb/docs/CACHE_FILENAME" -readonly -json -c "
+pixi run duckdb "$HOME/.duckdb/docs/CACHE_FILENAME" -readonly -json -c "
 LOAD fts;
 SELECT
     chunk_id, page_title, section, breadcrumb, url, version, text,
@@ -135,7 +135,7 @@ If the user's question could benefit from both DuckDB docs and blog results, run
 
 ## Step 6 — Handle errors
 
-- **Extension not installed** (`httpfs` or `fts` not found): run `duckdb :memory: -c "INSTALL httpfs; INSTALL fts;"` and retry.
+- **Extension not installed** (`httpfs` or `fts` not found): run `pixi run duckdb :memory: -c "INSTALL httpfs; INSTALL fts;"` and retry.
 - **ATTACH fails / network unreachable**: inform the user that the docs index is unavailable and suggest checking their internet connection. The DuckDB index is hosted at `https://duckdb.org/data/docs-search.duckdb` and the DuckLake index at `https://ducklake.select/data/docs-search.duckdb`.
 - **No results** (all scores NULL or empty result set): try broadening the query — drop the least specific term, or try a single-word version of the query — then retry Step 5. If still no results, tell the user no matching documentation was found and suggest visiting https://duckdb.org/docs or https://ducklake.select/docs directly.
 

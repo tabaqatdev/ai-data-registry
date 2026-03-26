@@ -45,7 +45,7 @@ If neither works, delegate to the **duckdb-install** skill and then continue.
 ## Step 3 — Validate the database
 
 ```bash
-duckdb "$RESOLVED_PATH" -c "PRAGMA version;"
+pixi run duckdb "$RESOLVED_PATH" -c "PRAGMA version;"
 ```
 
 - **Success** -> continue.
@@ -56,7 +56,7 @@ duckdb "$RESOLVED_PATH" -c "PRAGMA version;"
 First, list all tables:
 
 ```bash
-duckdb "$RESOLVED_PATH" -csv -c "
+pixi run duckdb "$RESOLVED_PATH" -csv -c "
 SELECT table_name, estimated_size
 FROM duckdb_tables()
 ORDER BY table_name;
@@ -68,7 +68,7 @@ If the database has **no tables**, note that it is empty and skip to Step 5.
 For each table discovered (up to 20), run:
 
 ```bash
-duckdb "$RESOLVED_PATH" -csv -c "
+pixi run duckdb "$RESOLVED_PATH" -csv -c "
 DESCRIBE <table_name>;
 SELECT count() AS row_count FROM <table_name>;
 "
@@ -141,7 +141,7 @@ Replace `RESOLVED_PATH` and `my_data` with the actual values. If the alias would
 ## Step 7 — Verify the state file works
 
 ```bash
-duckdb -init "$STATE_DIR/state.sql" -c "SHOW TABLES;"
+pixi run duckdb -init "$STATE_DIR/state.sql" -c "SHOW TABLES;"
 ```
 
 If this fails, fix the state file and retry.
