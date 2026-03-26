@@ -117,15 +117,17 @@ Rules load automatically when working with matching files. Path-scoped rules onl
 
 ## Reference: Commands (`.claude/commands/`)
 
-Slash commands for common operations. Run from the appropriate directory.
+Slash commands for common operations. Invoked as `/project:<name>`. All use `pixi run` and work cross-platform.
 
 | Command | Usage | What it does |
 |---------|-------|------|
 | `/project:new-workspace` | `<name> <language>` | Scaffold a sub-workspace: init, add runtime, register, generate tasks |
-| `/project:env-info` | (no args) | Show pixi env, installed packages, tool versions (DuckDB, GDAL, gpio) |
-| `/project:add-dep` | `<package> [--pypi]` | Add dependency to current workspace (checks which workspace you're in) |
+| `/project:env-info` | (no args) | Show pixi env, installed packages, tool versions, registered workspaces |
+| `/project:add-dep` | `<package> [--pypi] [-w workspace]` | Add dependency (conda-forge preferred, PyPI fallback) |
 | `/project:query` | `<SQL or description>` | Run DuckDB query via `pixi run duckdb` |
 | `/project:run-in` | `<workspace> <task>` | Run a pixi task in a specific workspace |
+| `/project:inspect-file` | `<file-path>` | Inspect any data file — schema, row count, samples, spatial info |
+| `/project:convert` | `<input> <output>` | Convert between geospatial formats (GeoParquet, GeoJSON, GeoPackage, etc.) |
 
 ## Reference: Skills (`.claude/skills/`)
 

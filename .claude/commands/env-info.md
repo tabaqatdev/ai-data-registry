@@ -1,5 +1,6 @@
 ---
 description: Show current pixi environment info, installed packages, and shared tool versions
+allowed-tools: Bash(pixi:*)
 ---
 ## Environment Info
 
@@ -15,10 +16,16 @@ description: Show current pixi environment info, installed packages, and shared 
 !`pixi run gdal --version 2>/dev/null || echo "GDAL not available"`
 !`pixi run gpio --version 2>/dev/null || echo "gpio (geoparquet-io) not available — install with: pixi add --pypi geoparquet-io"`
 !`pixi run python --version 2>/dev/null || echo "Python not available"`
+!`pixi run node --version 2>/dev/null || echo "Node.js not available"`
+!`pixi run pnpm --version 2>/dev/null || echo "pnpm not available"`
+
+## Registered Workspaces
+
+!`pixi workspace register list 2>/dev/null || echo "No workspaces registered"`
 
 ## Dependency Tree
 
 !`pixi tree`
 
-Summarize the environment state: Python version, key package versions (GDAL, DuckDB, gpio), platform, and any version conflicts.
+Summarize the environment state: Python version, key package versions (GDAL, DuckDB, gpio), platform, registered workspaces, and any version conflicts.
 For deeper diagnostics, use the **env-check** skill.
