@@ -24,9 +24,9 @@ Inspect the data file: `$ARGUMENTS`
    pixi run gdal info $0
    ```
 
-   **GeoParquet:**
+   **GeoParquet (if gpio installed):**
    ```bash
-   pixi run gpio inspect summary $0
+   pixi run gpio inspect $0
    pixi run gpio check all $0
    ```
 

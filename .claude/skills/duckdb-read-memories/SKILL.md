@@ -1,105 +1,47 @@
 ---
 name: read-memories
 description: >
-  Search past Claude Code session logs to recover your own context.
-  Invoke this proactively when you need to recall past decisions, patterns,
-  or unresolved work — either across all projects or scoped to the current one.
+  Search past Claude Code session logs to recover context. Use proactively when
+  recalling past decisions, patterns, or unresolved work from previous sessions.
 argument-hint: <keyword> [--here]
 allowed-tools: Bash
 ---
 
-Use this to recover your own context from past sessions. Do NOT narrate the
-process to the user — silently run the query, absorb the results, and continue
-with enriched context.
+Search silently — do NOT narrate to the user.
 
-`$0` is the keyword to search for.
-Pass `--here` as a second argument (`$1`) to scope the search to the current project only.
+`$0` = keyword. `$1` = `--here` to scope to current project.
 
-## Step 1 — Set the search path
+## Search path
 
 ```bash
-ALL_PROJECTS="$HOME/.claude/projects/*/*.jsonl"
-# Cross-platform path-to-ID conversion via Python
-CURRENT_PROJECT="$HOME/.claude/projects/$(pixi run python -c "import pathlib,re; print(re.sub(r'[/\\\\_]', '-', str(pathlib.Path.cwd())))")/*.jsonl"
+ALL="$HOME/.claude/projects/*/*.jsonl"
+CURRENT="$HOME/.claude/projects/$(pixi run python -c "import pathlib,re; print(re.sub(r'[/\\\\_]', '-', str(pathlib.Path.cwd())))")/*.jsonl"
 ```
 
-Use `$CURRENT_PROJECT` if `$1` is `--here`, otherwise use `$ALL_PROJECTS`.
+Use `$CURRENT` if `--here`, else `$ALL`.
 
-## Step 2 — Query
+## Query
 
 ```bash
-duckdb :memory: -c "
+pixi run duckdb :memory: -c "
 SELECT
   regexp_extract(filename, 'projects/([^/]+)/', 1) AS project,
   strftime(timestamp::TIMESTAMPTZ, '%Y-%m-%d %H:%M') AS ts,
-  message.role AS role,
-  message.content::VARCHAR AS content
-FROM read_ndjson('<SEARCH_PATH>', auto_detect=true, ignore_errors=true, filename=true)
-WHERE message::VARCHAR ILIKE '%<KEYWORD>%'
-  AND message.role IS NOT NULL
-ORDER BY timestamp
-LIMIT 40;
+  message.role, message.content::VARCHAR AS content
+FROM read_ndjson('<PATH>', auto_detect=true, ignore_errors=true, filename=true)
+WHERE message::VARCHAR ILIKE '%<KEYWORD>%' AND message.role IS NOT NULL
+ORDER BY timestamp LIMIT 40;
 "
 ```
 
-Replace `<SEARCH_PATH>` and `<KEYWORD>` with the resolved values before running.
+## Large results
 
-## Step 3 — Handle large result sets
-
-If Step 2 returns more than 40 rows or the output is very large, offload the results to a temporary DuckDB file so you can query them interactively without flooding the conversation context:
-
-Resolve the state directory first:
-
+If >40 rows, offload to temp DB:
 ```bash
-STATE_DIR=""
-test -d .duckdb-skills && STATE_DIR=".duckdb-skills"
-PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-PROJECT_ID="$(pixi run python -c "import pathlib,re; print(re.sub(r'[/\\\\_]', '-', '$PROJECT_ROOT'))")"
-test -d "$HOME/.duckdb-skills/$PROJECT_ID" && STATE_DIR="$HOME/.duckdb-skills/$PROJECT_ID"
-# Fall back to project-local if neither exists
-test -z "$STATE_DIR" && STATE_DIR=".duckdb-skills" && pixi run python -c "import pathlib; pathlib.Path('$STATE_DIR').mkdir(exist_ok=True)"
+pixi run duckdb ".duckdb-skills/memories.duckdb" -c "CREATE OR REPLACE TABLE memories AS <above query without LIMIT>;"
+# Then drill down interactively. Clean up when done.
 ```
 
-```bash
-duckdb "$STATE_DIR/memories.duckdb" -c "
-CREATE OR REPLACE TABLE memories AS
-SELECT
-  regexp_extract(filename, 'projects/([^/]+)/', 1) AS project,
-  timestamp::TIMESTAMPTZ AS ts,
-  message.role AS role,
-  message.content::VARCHAR AS content
-FROM read_ndjson('<SEARCH_PATH>', auto_detect=true, ignore_errors=true, filename=true)
-WHERE message::VARCHAR ILIKE '%<KEYWORD>%'
-  AND message.role IS NOT NULL
-ORDER BY timestamp;
-"
-```
+## Internalize
 
-Then query the table interactively to drill down:
-
-```bash
-duckdb "$STATE_DIR/memories.duckdb" -c "SELECT count() FROM memories;"
-duckdb "$STATE_DIR/memories.duckdb" -c "FROM memories WHERE content ILIKE '%<narrower term>%' LIMIT 20;"
-```
-
-Clean up when done:
-
-```bash
-pixi run python -c "import pathlib; pathlib.Path('$STATE_DIR/memories.duckdb').unlink(missing_ok=True)"
-```
-
-## Step 4 — Internalize
-
-From the results, extract:
-- Decisions made and their rationale
-- Patterns and conventions established
-- Unresolved items or open TODOs
-- Any corrections the user made to your prior behavior
-
-Use this to inform your current response. Do not repeat back the raw logs to the user.
-
-## Cross-references
-- Use the **duckdb-query** skill to run follow-up queries on recovered context
-- Use the **duckdb-docs** skill if DuckDB returns errors when reading JSONL logs
-- Use the **duckdb-attach-db** skill if you want to persist memories alongside project data
-- Session state (`state.sql`) is shared — memories can be cross-referenced with attached databases
+Extract decisions, patterns, conventions, unresolved items. Use to inform current response.

@@ -1,102 +1,41 @@
 ---
 name: install-duckdb
 description: >
-  Install or update DuckDB extensions. Each argument is either a plain
-  extension name (installs from core) or name@repo (e.g. magic@community).
-  Pass --update to update extensions instead of installing.
-argument-hint: "[--update] [ext1 ext2@repo ext3 ...]"
+  Install or update DuckDB extensions. Use when DuckDB reports a missing extension,
+  when the user asks to install/update extensions, or when other skills delegate here.
+  Each argument is a plain extension name or name@repo. Pass --update to update.
+argument-hint: "[--update] [ext1 ext2@repo ...]"
 allowed-tools: Bash
 ---
 
 Arguments: `$@`
 
-Each extension argument has the form `name` or `name@repo`.
-- `name` → `INSTALL name;`
-- `name@repo` → `INSTALL name FROM repo;`
+Parse each extension as `name` → `INSTALL name;` or `name@repo` → `INSTALL name FROM repo;`.
 
 ## Step 1 — Locate DuckDB
-
-This project provides DuckDB via pixi. Try `pixi run duckdb` first:
 
 ```bash
 pixi run duckdb --version
 ```
 
-If pixi is available and DuckDB is in `pixi.toml`, use `pixi run duckdb` for all subsequent commands.
+If pixi fails, fall back to system `duckdb --version`. If neither works, tell the user to install via `pixi add duckdb` or see https://duckdb.org/docs/installation.
 
-If pixi is not available, fall back to system DuckDB:
+## Step 2 — Install or update
 
-```bash
-duckdb --version
-```
-
-If neither works, tell the user:
-
-> **DuckDB is not installed.** Install it with one of:
-> - **Via pixi (recommended):** `pixi add duckdb` in the workspace
-> - macOS:   `brew install duckdb`
-> - Linux:   `curl -fsSL https://install.duckdb.org | sh`
-> - Windows: `winget install DuckDB.cli`
->
-> Then re-run `/duckdb-skills:install-duckdb`.
-
-Stop if DuckDB is not found.
-
-## Step 2 — Check for --update flag
-
-If `--update` is present in `$@`, remove it from the argument list and set mode to **update**.
-Otherwise mode is **install**.
-
-## Step 3 — Build and run statements
-
-**Install mode:**
-
-Parse each remaining argument:
-- If it contains `@`, split on `@` → `INSTALL <name> FROM <repo>;`
-- Otherwise → `INSTALL <name>;`
-
-Run all in a single DuckDB call:
+**Install mode** (no `--update` flag):
 
 ```bash
-"$DUCKDB" :memory: -c "INSTALL <ext1>; INSTALL <ext2> FROM <repo2>; ..."
+pixi run duckdb :memory: -c "INSTALL ext1; INSTALL ext2 FROM repo2; ..."
 ```
 
-**Update mode:**
-
-First, check if the DuckDB CLI itself is up to date:
+**Update mode** (`--update` in `$@`):
 
 ```bash
-CURRENT=$(duckdb --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-LATEST=$(curl -fsSL https://duckdb.org/data/latest_stable_version.txt)
+# Check CLI version
+pixi run duckdb --version
+# Update extensions
+pixi run duckdb :memory: -c "UPDATE EXTENSIONS;"
+# Or specific: UPDATE EXTENSIONS (ext1, ext2);
 ```
 
-- If `CURRENT` == `LATEST` → report DuckDB CLI is up to date.
-- If `CURRENT` != `LATEST` → ask the user:
-  > **DuckDB CLI is outdated** (installed: `CURRENT`, latest: `LATEST`). Upgrade now?
-
-  If the user agrees, detect the platform and run the appropriate upgrade command:
-  - macOS (`brew` available): `brew upgrade duckdb`
-  - Linux: `curl -fsSL https://install.duckdb.org | sh`
-  - Windows: `winget upgrade DuckDB.cli`
-
-Then update extensions:
-
-- No extension names → update all: `UPDATE EXTENSIONS;`
-- With extension names → update in a single call (ignore `@repo`):
-  `UPDATE EXTENSIONS (<name1>, <name2>, ...);`
-
-```bash
-"$DUCKDB" :memory: -c "UPDATE EXTENSIONS;"
-# or
-"$DUCKDB" :memory: -c "UPDATE EXTENSIONS (<ext1>, <ext2>, ...);"
-```
-
-Report success or failure after the call completes.
-
-**Note:** This project provides DuckDB via pixi (`pixi run duckdb`). If `duckdb` is not in PATH, try `pixi run duckdb` first. Only install system-wide if pixi is not available.
-
-## Cross-references
-- Other skills delegate here when they encounter missing extensions
-- Use the **duckdb-docs** skill to look up extension documentation
-- Use the **duckdb-query** skill to verify extensions work after installation
-- Common extensions for this project: `spatial`, `httpfs`, `fts`, `parquet`
+Report success or failure. Common extensions for this project: `spatial`, `httpfs`, `fts`, `parquet`.

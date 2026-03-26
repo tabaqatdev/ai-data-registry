@@ -64,7 +64,7 @@ Or use `/project:new-workspace <name> <language>` for guided setup.
 # Shared tools (from root — uses root pixi.toml)
 pixi run duckdb -csv -c "SELECT 42"
 pixi run gdal info input.gpkg
-pixi run gpio inspect summary file.parquet
+pixi run gpio inspect file.parquet
 
 # Workspace tasks (from root, using -w flag)
 pixi run -w workspace-a <task>
@@ -167,7 +167,7 @@ Agents are spawned as subprocesses for complex tasks. They run autonomously and 
 |------|---------|---------|---------|
 | GDAL | >=3.12.3 | `pixi run gdal ...` | Unified vector/raster CLI (v3.11+) |
 | DuckDB | >=1.5.1 | `pixi run duckdb ...` | Analytical SQL engine |
-| gpio | beta | `pixi run gpio ...` | GeoParquet optimization/validation |
+| gpio | 1.0.0b2 | `pixi run gpio ...` | GeoParquet optimization/validation (PyPI: `pixi add --pypi geoparquet-io --pre`) |
 | libgdal-arrow-parquet | >=3.12.3 | (GDAL driver) | Parquet I/O via Arrow |
 | pnpm | >=10.32.1 | `pixi run pnpm ...` | Node package manager (NEVER npm) |
 | Python | >=3.12.13 | `pixi run python ...` | Default runtime |
@@ -182,6 +182,8 @@ osx-arm64, linux-64, win-64 — all dependencies must be cross-platform compatib
 - Run **env-check** skill after setup or when things break — it validates everything
 - Always run `pixi install` after pulling to sync the environment
 - GDAL version must match libgdal-arrow-parquet version
+- GDAL: `vector convert` is format-only; use `vector reproject -d EPSG:xxxx` for CRS changes
+- gpio: install via `pixi add --pypi geoparquet-io --pre` (PyPI beta, not on conda-forge)
 - DuckDB spatial extension: `INSTALL spatial; LOAD spatial;` (or use **duckdb-state** skill)
 - Always validate GeoParquet: `pixi run gpio check all <file>`
 - Use `pixi run pnpm` not `npm` — npm is denied in settings.json

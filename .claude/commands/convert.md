@@ -7,23 +7,23 @@ Convert `$0` to `$1`.
 
 ## Decision flow
 
-Choose the right tool based on the conversion:
-
-**To GeoParquet** (preferred output format):
+**To GeoParquet** (preferred output):
 ```bash
-pixi run gdal convert --format Parquet --co COMPRESSION=ZSTD $0 $1
+pixi run gdal vector convert $0 $1 --co COMPRESSION=ZSTD
 ```
-Then validate:
-```bash
-pixi run gpio check all $1
-```
+Then validate (if gpio available): `pixi run gpio check all $1`
 
-**From/to other spatial formats** (GeoPackage, Shapefile, GeoJSON, FlatGeobuf):
+**Between spatial formats** (GeoPackage, Shapefile, GeoJSON, FlatGeobuf):
 ```bash
-pixi run gdal convert $0 $1
+pixi run gdal vector convert $0 $1
 ```
 
-**CSV with coordinates to GeoParquet** (via DuckDB):
+**With reprojection** (use `reproject`, not `convert`):
+```bash
+pixi run gdal vector reproject $0 $1 --dst-crs EPSG:4326
+```
+
+**CSV with coordinates → GeoParquet** (via DuckDB):
 ```bash
 pixi run duckdb -c "
   INSTALL spatial; LOAD spatial;
@@ -33,11 +33,6 @@ pixi run duckdb -c "
   ) TO '$1' (FORMAT PARQUET, COMPRESSION ZSTD);
 "
 ```
-Ask the user for the longitude/latitude column names if not obvious.
+Ask the user for longitude/latitude column names if not obvious.
 
-**Reproject during conversion:**
-```bash
-pixi run gdal convert --dst-crs EPSG:4326 $0 $1
-```
-
-After conversion, show the output file size and a brief schema summary.
+After conversion, show output file size and brief schema summary.
