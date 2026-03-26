@@ -22,5 +22,6 @@ paths:
 ## Playwright Skill
 - Skill directory: `.claude/skills/playwright-skill/`
 - Setup: `cd .claude/skills/playwright-skill && pixi run pnpm run setup`
-- Execute: `cd .claude/skills/playwright-skill && pixi run node run.js ../../.tmp/test.js`
-- Temp files go in `.tmp/` (gitignored, cross-platform)
+- Execute: `pixi run node run.js .tmp/test.js` (run.js auto-resolves paths via `PIXI_PROJECT_ROOT`)
+- In JS code: `process.env.PIXI_PROJECT_ROOT` gives the project root (set by `pixi run`)
+- Temp files go in `.tmp/` at project root (gitignored, cross-platform)

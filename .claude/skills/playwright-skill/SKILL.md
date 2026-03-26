@@ -16,7 +16,14 @@ Set: `SKILL_DIR=".claude/skills/playwright-skill"`
 
 **Environment:** Node.js is provided by pixi (`pixi run node`). Playwright runs via the skill's `run.js` executor.
 
-**Temp directory:** Use `.tmp/` at the project root for all scratch files (scripts, screenshots). This directory is gitignored and works cross-platform.
+**Temp directory:** Use `.tmp/` for all scratch files (scripts, screenshots). This directory is gitignored and works cross-platform.
+
+**Pixi env vars (set by `pixi run`, available inside Node/Python processes):**
+- `process.env.PIXI_PROJECT_ROOT` — absolute path to project root (use in JS code for path resolution)
+- `process.env.INIT_CWD` — directory where `pixi run` was invoked from
+- `process.env.PIXI_PROJECT_NAME` — project name from pixi.toml
+
+**Note:** These env vars are available INSIDE `pixi run` processes (JS/Python), NOT in the outer shell. The `run.js` executor auto-resolves relative paths via `PIXI_PROJECT_ROOT` and `INIT_CWD`, so simple paths like `.tmp/test.js` just work.
 
 # Playwright Browser Automation
 
@@ -29,7 +36,7 @@ General-purpose browser automation skill. Write custom Playwright code for any a
 pixi run node --version
 
 # Create project temp directory
-pixi run python -c "import pathlib; pathlib.Path('.tmp').mkdir(exist_ok=True)"
+mkdir -p .tmp
 
 # Install Playwright and Chromium
 cd .claude/skills/playwright-skill && pixi run pnpm run setup
@@ -39,7 +46,7 @@ cd .claude/skills/playwright-skill && pixi run pnpm run setup
 
 1. **Auto-detect dev servers** — For localhost testing, ALWAYS run server detection FIRST:
    ```bash
-   cd $SKILL_DIR && pixi run node -e "require('./lib/helpers').detectDevServers().then(servers => console.log(JSON.stringify(servers)))"
+   cd .claude/skills/playwright-skill && pixi run node -e "require('./lib/helpers').detectDevServers().then(servers => console.log(JSON.stringify(servers)))"
    ```
    - If **1 server found**: Use it automatically
    - If **multiple servers found**: Ask user which one
@@ -55,13 +62,13 @@ cd .claude/skills/playwright-skill && pixi run pnpm run setup
 
 ```bash
 # Step 1: Detect dev servers
-cd $SKILL_DIR && pixi run node -e "require('./lib/helpers').detectDevServers().then(s => console.log(JSON.stringify(s)))"
+cd .claude/skills/playwright-skill && pixi run node -e "require('./lib/helpers').detectDevServers().then(s => console.log(JSON.stringify(s)))"
 
 # Step 2: Ensure .tmp/ exists and write test script there
-pixi run python -c "import pathlib; pathlib.Path('.tmp').mkdir(exist_ok=True)"
+mkdir -p .tmp
 
-# Step 3: Execute from skill directory
-cd $SKILL_DIR && pixi run node run.js ../../.tmp/playwright-test-page.js
+# Step 3: Execute — use $PIXI_PROJECT_ROOT for path resolution (run.js changes cwd to skill dir)
+pixi run node run.js .tmp/playwright-test-page.js
 ```
 
 ## Common Patterns
@@ -72,7 +79,8 @@ cd $SKILL_DIR && pixi run node run.js ../../.tmp/playwright-test-page.js
 const { chromium } = require('playwright');
 const path = require('path');
 const TARGET_URL = 'http://localhost:3001';
-const TMP_DIR = path.resolve(__dirname, '..', '..', '.tmp');
+// Use PIXI_PROJECT_ROOT for reliable path resolution (set by pixi run)
+const TMP_DIR = path.join(process.env.PIXI_PROJECT_ROOT || process.cwd(), '.tmp');
 
 (async () => {
   const browser = await chromium.launch({ headless: false });
@@ -89,7 +97,8 @@ const TMP_DIR = path.resolve(__dirname, '..', '..', '.tmp');
 const { chromium } = require('playwright');
 const path = require('path');
 const TARGET_URL = 'http://localhost:3001';
-const TMP_DIR = path.resolve(__dirname, '..', '..', '.tmp');
+// Use PIXI_PROJECT_ROOT for reliable path resolution (set by pixi run)
+const TMP_DIR = path.join(process.env.PIXI_PROJECT_ROOT || process.cwd(), '.tmp');
 
 (async () => {
   const browser = await chromium.launch({ headless: false, slowMo: 100 });
@@ -172,12 +181,13 @@ const { chromium } = require('playwright');
 ## Inline Execution (Simple Tasks)
 
 ```bash
-cd $SKILL_DIR && pixi run node run.js "
+cd .claude/skills/playwright-skill && pixi run node run.js "
 const path = require('path');
+const TMP_DIR = path.join(process.env.PIXI_PROJECT_ROOT, '.tmp');
 const browser = await chromium.launch({ headless: false });
 const page = await browser.newPage();
 await page.goto('http://localhost:3001');
-await page.screenshot({ path: path.resolve('../../.tmp/quick.png'), fullPage: true });
+await page.screenshot({ path: path.join(TMP_DIR, 'quick.png'), fullPage: true });
 await browser.close();
 "
 ```
@@ -198,7 +208,7 @@ const data = await helpers.extractTableData(page, 'table.results');
 
 ```bash
 PW_HEADER_NAME=X-Automated-By PW_HEADER_VALUE=playwright-skill \
-  cd $SKILL_DIR && pixi run node run.js ../../.tmp/my-script.js
+  pixi run node .claude/skills/playwright-skill/run.js .tmp/my-script.js
 ```
 
 ## Configuration
@@ -214,13 +224,13 @@ See @API_REFERENCE.md for comprehensive documentation on selectors, network inte
 
 ```bash
 # Playwright not installed
-cd $SKILL_DIR && pixi run pnpm run setup
+cd .claude/skills/playwright-skill && pixi run pnpm run setup
 
-# Module not found — always run from skill directory via run.js
-cd $SKILL_DIR && pixi run node run.js ../../.tmp/my-test.js
+# Module not found — use $PIXI_PROJECT_ROOT for paths (set by pixi run)
+pixi run node run.js .tmp/my-test.js
 
 # Install all browsers (not just Chromium)
-cd $SKILL_DIR && pixi run pnpm run install-all-browsers
+cd .claude/skills/playwright-skill && pixi run pnpm run install-all-browsers
 ```
 
 ## Cross-references

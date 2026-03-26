@@ -40,13 +40,31 @@ function installPlaywright() {
   }
 }
 
+function resolveScriptPath(arg) {
+  // 1. Try as-is (absolute path or relative to cwd, which is skill dir after chdir)
+  if (fs.existsSync(arg)) return path.resolve(arg);
+  // 2. Try relative to PIXI_PROJECT_ROOT (set by pixi run)
+  if (process.env.PIXI_PROJECT_ROOT) {
+    const fromRoot = path.resolve(process.env.PIXI_PROJECT_ROOT, arg);
+    if (fs.existsSync(fromRoot)) return fromRoot;
+  }
+  // 3. Try relative to INIT_CWD (original working directory before pixi run)
+  if (process.env.INIT_CWD) {
+    const fromInitCwd = path.resolve(process.env.INIT_CWD, arg);
+    if (fs.existsSync(fromInitCwd)) return fromInitCwd;
+  }
+  return null;
+}
+
 function getCodeToExecute() {
   const args = process.argv.slice(2);
 
-  if (args.length > 0 && fs.existsSync(args[0])) {
-    const filePath = path.resolve(args[0]);
-    console.log(`Executing file: ${filePath}`);
-    return fs.readFileSync(filePath, 'utf8');
+  if (args.length > 0) {
+    const resolved = resolveScriptPath(args[0]);
+    if (resolved) {
+      console.log(`Executing file: ${resolved}`);
+      return fs.readFileSync(resolved, 'utf8');
+    }
   }
 
   if (args.length > 0) {
