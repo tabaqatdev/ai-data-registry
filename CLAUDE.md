@@ -170,7 +170,7 @@ Agents are spawned as subprocesses for complex tasks. They run autonomously and 
 | gpio | beta | `pixi run gpio ...` | GeoParquet optimization/validation |
 | libgdal-arrow-parquet | >=3.12.3 | (GDAL driver) | Parquet I/O via Arrow |
 | pnpm | >=10.32.1 | `pixi run pnpm ...` | Node package manager (NEVER npm) |
-| Python | >=3.14.3 | `pixi run python ...` | Default runtime |
+| Python | >=3.12.13 | `pixi run python ...` | Default runtime |
 | Node.js | via pixi | `pixi run node ...` | Node.js runtime |
 
 ## Platforms
@@ -185,6 +185,6 @@ osx-arm64, linux-64, win-64 — all dependencies must be cross-platform compatib
 - DuckDB spatial extension: `INSTALL spatial; LOAD spatial;` (or use **duckdb-state** skill)
 - Always validate GeoParquet: `pixi run gpio check all <file>`
 - Use `pixi run pnpm` not `npm` — npm is denied in settings.json
-- Python 3.14 is bleeding edge — some PyPI packages may not have wheels
+- Python 3.12 is the runtime — stable and widely supported
 - Each workspace may use a different language — check its `pixi.toml` first
 - Never mix workspace dependencies — isolation is enforced

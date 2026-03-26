@@ -10,7 +10,7 @@ Geospatial data processing template with a full AI-powered development ecosystem
 - GDAL (>=3.12.3) — new unified `gdal` CLI for vector/raster
 - DuckDB (>=1.5.1) — analytical SQL engine with spatial extension
 - gpio (geoparquet-io) — GeoParquet optimization, validation, STAC
-- pnpm, Python 3.14, Node.js
+- pnpm, Python 3.12, Node.js
 
 **Claude Code Ecosystem (`.claude/`):**
 - 13 skills (GDAL, DuckDB, GeoParquet, Spatial Analysis, Playwright, etc.)
