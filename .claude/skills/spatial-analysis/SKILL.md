@@ -73,7 +73,89 @@ This is the **authoritative source** — it reflects the exact version installed
 - Raster+vector: `gdal vector rasterize` / `gdal raster polygonize`
 - Zonal stats: `gdal raster zonal-stats <raster> <zones> <out>`
 
+## ArcGIS FeatureServer via DuckDB
+
+Reusable macros for querying ArcGIS REST services directly from DuckDB. Load once per session:
+
+```bash
+pixi run duckdb -init ".duckdb-skills/arcgis.sql"
+```
+
+Or inside a running session: `.read .duckdb-skills/arcgis.sql`
+
+### Macro Quick Reference
+
+| Level | Macro | Returns |
+|-------|-------|---------|
+| **L0** | `arcgis_type_map(esri_type)` | DuckDB type name |
+| **L0** | `arcgis_geom_map(esri_geom)` | WKT geometry type |
+| **L0** | `arcgis_query_url(base, layer, ...)` | Full query URL (with token if set) |
+| **L1** | `arcgis_services(catalog_url)` | TABLE: service_name, service_type |
+| **L1** | `arcgis_layer_meta(layer_url)` | TABLE: meta as VARIANT (dot notation) |
+| **L1** | `arcgis_meta(layer_url)` | TABLE: one-row summary |
+| **L1** | `arcgis_count(query_url)` | TABLE: total |
+| **L1** | `arcgis_fields(layer_url)` | TABLE: field_name, esri_type, duckdb_type, domain |
+| **L1** | `arcgis_domains(layer_url)` | TABLE: field_name, code, label |
+| **L1** | `arcgis_subtypes(layer_url)` | TABLE: type_field, subtype_id, subtype_name |
+| **L1** | `arcgis_relationships(layer_url)` | TABLE: rel_id, rel_name, cardinality, key_field |
+| **L2** | `arcgis_query(url)` | TABLE: properties + geometry (no CRS) |
+| **L2** | `arcgis_read(url, crs)` | TABLE: properties + geometry WITH CRS |
+
+### Common Workflows
+
+```sql
+-- Inspect a layer
+SELECT * FROM arcgis_meta('https://.../FeatureServer/0?f=json');
+SELECT * FROM arcgis_fields('https://.../FeatureServer/0?f=json');
+
+-- Download features with CRS
+SELECT * FROM arcgis_read('https://.../FeatureServer/0/query?where=1%3D1&outFields=%2A&outSR=4326&returnGeometry=true&f=geojson');
+
+-- Paginated download (> maxRecordCount)
+SELECT * FROM arcgis_read([
+    'https://.../FeatureServer/0/query?where=1%3D1&outFields=%2A&outSR=4326'
+    '&returnGeometry=true&resultOffset=' || x || '&resultRecordCount=2000&f=geojson'
+    FOR x IN generate_series(0, 12000, 2000)
+]);
+
+-- Export to GeoParquet with VARIANT metadata
+COPY (
+    WITH lm AS (SELECT meta FROM arcgis_layer_meta('https://.../FeatureServer/0?f=json'))
+    SELECT f.*, (SELECT lm.meta.drawingInfo FROM lm)::VARIANT AS drawing_info
+    FROM arcgis_read('https://.../query?where=1%3D1&outFields=%2A&outSR=4326&returnGeometry=true&f=geojson') f
+) TO 'output.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 15);
+
+-- Domain resolution (3 steps)
+SET VARIABLE arcgis_layer = 'https://.../FeatureServer/16?f=json';
+CREATE OR REPLACE TEMP TABLE _domains AS
+WITH dl AS (SELECT * FROM arcgis_domains(getvariable('arcgis_layer')))
+SELECT MAP(list(field_name), list(lookup)) AS all_domains
+FROM (SELECT field_name, MAP(list(code), list(label)) AS lookup FROM dl GROUP BY field_name);
+CREATE OR REPLACE MACRO resolve_domain(field_val, field_name) AS
+    COALESCE(
+        (SELECT all_domains[field_name] FROM _domains)[field_val::VARCHAR],
+        (SELECT all_domains[field_name] FROM _domains)[TRY_CAST(field_val AS INTEGER)::VARCHAR]
+    );
+```
+
+### Authentication
+
+```sql
+-- Token in URL (auto-appended by arcgis_query_url)
+SET VARIABLE arcgis_token = 'YOUR_TOKEN';
+
+-- HTTP headers (more secure)
+SET http_extra_headers = MAP {'X-Esri-Authorization': 'Bearer YOUR_TOKEN'};
+```
+
+Full reference: `.duckdb-skills/arcgis.sql`
+
 ## Cross-references
 - **geoparquet** skill — gpio adds Hilbert sorting, bbox covering, validation
-- **gdal** skill — complete unified GDAL CLI reference
+- **gdal** skill — complete unified GDAL CLI reference (including Esri references in `references/esri-*.md`)
 - **duckdb-query** skill — interactive DuckDB SQL queries
+- **duckdb-state** skill — manages `.duckdb-skills/state.sql` (extensions, credentials, macros)
+- **duckdb-read-file** skill — explore any data file before analysis
+- **data-explorer** agent — proactive dataset profiling (DuckDB + GDAL + gpio)
+- **data-quality** agent — deep validation (nulls, geometry, CRS consistency)
+- **pipeline-orchestrator** agent — multi-step workflow generation with pixi tasks
