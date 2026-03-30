@@ -139,6 +139,9 @@ Detailed references for all Esri-related drivers and workflows live in `referenc
 
 | Reference | When to read |
 |-----------|-------------|
+| [parquet.md](references/parquet.md) | GeoParquet/Parquet read/write (Parquet 2.x native geometry, bbox covering, spatial sorting, compression) |
+| [arrow.md](references/arrow.md) | Arrow IPC/Feather read/write (GeoArrow encoding, FILE vs STREAM, compression) |
+| [adbc.md](references/adbc.md) | ADBC database connectivity (DuckDB, PostgreSQL, SQLite, BigQuery, Snowflake), read-only, spatial filtering |
 | [esri-featureserver.md](references/esri-featureserver.md) | Downloading from ArcGIS FeatureServer/REST endpoints, ESRIJSON driver, pagination, authentication |
 | [esri-filegdb.md](references/esri-filegdb.md) | Reading/writing .gdb (File Geodatabase), OpenFileGDB driver, field domains, subtypes, relationships, special SQL |
 | [esri-shapefile.md](references/esri-shapefile.md) | Shapefile limitations, encoding, long field names (3.13+), migration to GeoParquet |
@@ -155,4 +158,4 @@ Detailed references for all Esri-related drivers and workflows live in `referenc
 
 ## Cross-references
 - **geoparquet** skill — gpio adds Hilbert sorting, bbox covering, validation that GDAL doesn't
-- **duckdb** skill — DuckDB spatial + GDAL workflows ([spatial.md](../duckdb/references/spatial.md), [arcgis.md](../duckdb/references/arcgis.md))
+- **duckdb** skill — DuckDB spatial analysis ([spatial.md](../duckdb/references/spatial.md), [arcgis.md](../duckdb/references/arcgis.md)), discrete global grids ([h3.md](../duckdb/references/h3.md), [a5.md](../duckdb/references/a5.md), [geography.md](../duckdb/references/geography.md))
