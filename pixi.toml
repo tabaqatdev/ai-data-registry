@@ -8,8 +8,12 @@ version = "0.1.0"
 [tasks]
 
 [dependencies]
-gdal = ">=3.12.3,<4"
-duckdb = ">=1.5.1,<2"
-libgdal-arrow-parquet = ">=3.12.3,<4"
-pnpm = ">=10.32.1,<11"
 python = ">=3.12.13,<3.13"
+nodejs = ">=22.22.2,<24.15"
+pnpm = ">=10.32.1,<11"
+gdal = ">=3.12.3,<4"
+libgdal-arrow-parquet = ">=3.12.3,<4"
+duckdb = ">=1.5.1,<2"
+
+[pypi-dependencies]
+geoparquet-io = ">=1.0.0b2"
