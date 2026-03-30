@@ -12,6 +12,7 @@ All CLI tools MUST be run through pixi to ensure the correct versions and enviro
 | Python | `pixi run python` | Python runtime |
 | Node.js | `pixi run node` | Node.js runtime |
 | pnpm | `pixi run pnpm` | Node package manager (NEVER npm/yarn) |
+| s5cmd | `pixi run s5cmd` | Parallel S3 uploads/downloads |
 
 ## Running from Root vs Workspace
 
@@ -34,4 +35,5 @@ pixi add -w <workspace> <pkg>
 - Do NOT run `gpio` directly — always `pixi run gpio`
 - Do NOT run `npm` — always `pixi run pnpm`
 - Do NOT run `python` directly — always `pixi run python`
+- Do NOT run `s5cmd` directly — always `pixi run s5cmd`
 - This ensures version consistency across platforms and workspaces

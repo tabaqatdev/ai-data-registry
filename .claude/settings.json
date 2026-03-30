@@ -4,10 +4,6 @@
     "allow": [
       "Bash(pixi *)",
       "Bash(pixi run *)",
-      "Bash(duckdb *)",
-      "Bash(node *)",
-      "Bash(pnpm *)",
-      "Bash(pnpx *)",
       "Bash(cd *)",
       "Bash(git status)",
       "Bash(git diff *)",
@@ -18,17 +14,9 @@
       "Bash(mkdir *)",
       "Bash(test *)",
       "Bash(echo *)",
-      "Bash(cat *)",
-      "Bash(mv *)",
-      "Bash(cp *)",
-      "Bash(rm -f *)",
-      "Bash(find *)",
-      "Bash(grep *)",
-      "Bash(curl *)",
       "Bash(command -v *)",
       "Bash(stat *)",
-      "Bash(where *)",
-      "Bash(pwsh *)",
+      "Bash(wc *)",
       "Read",
       "Write",
       "Edit",
@@ -44,12 +32,22 @@
       "Bash(rm -r *)",
       "Bash(pixi clean *)",
       "Bash(npm *)",
-      "Read(./.env)",
-      "Read(./.env.*)"
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Bash(cat **/.env)",
+      "Bash(cat **/.env.*)"
     ],
     "ask": [
       "Read(.claude/skills/duckdb/references/*.sql)",
-      "Grep(.claude/skills/duckdb/references/*.sql)"
+      "Grep(.claude/skills/duckdb/references/*.sql)",
+      "Bash(curl *)",
+      "Bash(s5cmd *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(rm -f *)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(grep *)"
     ]
   }
 }

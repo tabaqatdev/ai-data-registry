@@ -313,7 +313,7 @@ Every workspace MUST:
 9. Exit 0 on success, non-zero on failure
 
 Every workspace MUST NOT:
-1. Write to S3 directly (the workflow uploads on its behalf)
+1. Write to S3 directly (the workflow uploads via s5cmd on its behalf)
 2. Declare a `schema` that conflicts with another workspace's prefix
 3. Bundle credentials in code (use `$WORKSPACE_SECRET_*` env vars)
 4. Declare unsupported backends or flavors (PR validation will reject)
@@ -325,7 +325,7 @@ Any language is fine. Python, TypeScript, SQL, GDAL CLI, whatever works. The com
 
 ## S3 Write Isolation
 
-Workspace code gets READ-ONLY S3 credentials. It writes Parquet to local `$OUTPUT_DIR`. The workflow validates output, then uploads to the correct S3 prefix on the workspace's behalf. The workspace code never gets S3 write access.
+Workspace code gets READ-ONLY S3 credentials. It writes Parquet to local `$OUTPUT_DIR`. The workflow validates output, then uploads to the correct S3 prefix via `s5cmd` (parallel, 256 workers by default). The workspace code never gets S3 write access.
 
 ```mermaid
 sequenceDiagram
@@ -336,10 +336,9 @@ sequenceDiagram
     WF->>HR: Start with READ-ONLY S3 creds
     HR->>HR: pixi run -w weather extract<br/>(writes to local $OUTPUT_DIR)
     HR->>HR: Validate output<br/>(prefix, gpio, row counts)
-    HR->>WF: Upload validated files as artifact
-    Note over WF: Workflow has WRITE creds
-    WF->>S3: Upload Parquet to s3://registry/weather/
-    WF->>S3: Upload workspace catalog
+    Note over HR: Workflow step (not workspace code)<br/>has S3 WRITE creds
+    HR->>S3: s5cmd cp output/*.parquet<br/>s3://registry/weather/
+    HR->>S3: Upload workspace catalog
 ```
 
 ---
@@ -354,7 +353,7 @@ flowchart TD
         SCHEMA_VALID["Required fields present?"]
         LICENSE["SPDX license IDs valid?"]
         CRON["Cron syntax parseable?"]
-        NAME["Name: lowercase, no reserved words"]
+        NAME["Name: ^[a-z][a-z0-9-]*$, no reserved words"]
         BACKEND["Runner backend + flavor in supported list?"]
         TASKS["Required tasks exist? (pipeline, extract, validate, dry-run)"]
     end
@@ -545,11 +544,15 @@ jobs:
           WORKSPACE_SECRET_API_KEY: ${{ secrets[format('WS_{0}_API_KEY', inputs.workspace)] }}
         run: pixi run -w ${{ inputs.workspace }} pipeline
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: output-${{ inputs.workspace }}
-          path: ${{ runner.temp }}/output/
-          retention-days: 7
+      - name: Upload to S3
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+        run: |
+          pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
+            cp "${{ runner.temp }}/output/*.parquet" \
+            "s3://${{ secrets.S3_BUCKET }}/${{ inputs.workspace }}/"
 ```
 
 ### Backend: Hetzner Cloud (`backend = "hetzner"`)
@@ -610,11 +613,15 @@ jobs:
           WORKSPACE_SECRET_API_KEY: ${{ secrets[format('WS_{0}_API_KEY', inputs.workspace)] }}
         run: pixi run -w ${{ inputs.workspace }} pipeline
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: output-${{ inputs.workspace }}
-          path: ${{ runner.temp }}/output/
-          retention-days: 7
+      - name: Upload to S3
+        env:
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+        run: |
+          pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
+            cp "${{ runner.temp }}/output/*.parquet" \
+            "s3://${{ secrets.S3_BUCKET }}/${{ inputs.workspace }}/"
 
   delete-runner:
     needs: [create-runner, extract]
@@ -635,6 +642,11 @@ jobs:
 | `cax21` | 4 | ARM | 8 GB | 80 GB | Medium datasets |
 | `cax31` | 8 | ARM | 16 GB | 160 GB | Large spatial datasets |
 | `cax41` | 16 | ARM | 32 GB | 320 GB | Heavy processing |
+
+**Security notes for Hetzner backend:**
+- `RUNNER_PAT` must be a fine-grained PAT with minimum scope (`actions:write` for runner management only). Prefer a GitHub App token for automatic rotation.
+- Add a Hetzner cleanup cron job that deletes servers tagged `github-runner-*` older than 2 hours, as a safety net for partial `create-runner` failures where the server was created but `server_id` was not captured.
+- `post-cleanup: true` in setup-pixi ensures `.pixi`, pixi binary, and rattler cache are deleted after the job, preventing credential leaks on self-hosted runners.
 
 ### Backend: Hugging Face Jobs (`backend = "huggingface"`)
 
@@ -692,6 +704,8 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
         run: pixi run -w ${{ inputs.workspace }} pipeline
 ```
+
+**Security note:** The HF backend passes S3 write credentials directly to the container, breaking the write-isolation pattern used by GitHub/Hetzner backends. This is an accepted trade-off because HF containers run on external infrastructure without workflow-level upload steps. Mitigate by scoping S3 credentials per workspace if Hetzner adds per-prefix IAM support, or use a proxy that validates write paths.
 
 **Key differences from pixi-native backends:**
 - The `extract` task calls `submit_hf_job.py` (or similar), not the actual data processing code
@@ -900,7 +914,7 @@ Using free GitHub runners for lightweight workspaces saves ~2 EUR/mo in Hetzner 
 
 ```
 ai-data-registry/
-    pixi.toml                        # Root: shared tools (DuckDB, GDAL, gpio)
+    pixi.toml                        # Root: shared tools (DuckDB, GDAL, gpio, s5cmd)
     pixi.lock                        # Single lock for all workspaces
 
     workspaces/
@@ -946,7 +960,7 @@ ai-data-registry/
             validate-output.py       # Parquet quality checks
 
     .claude/                         # AI rules, skills, agents (existing)
-    docs/                            # This file
+    research/                        # This file
 ```
 
 No catalogs in git. No state files in git. Everything ephemeral is on S3 or workflow artifacts.
@@ -1001,7 +1015,8 @@ Issues discovered during architecture research that affect this design:
 | Compaction | Workspace catalogs only. Global has `auto_compact = false`. | Prevents global catalog from deleting workspace-owned files on S3. |
 | Schema.table ownership | One workspace owns one schema.table | Prevents corruption from multiple writers. Enforced in PR checks. |
 | Licensing | Required `[tool.registry.license]` with code + data SPDX | Legal clarity. Mixed sources must declare per-source. |
-| S3 write isolation | Workspace code gets READ-ONLY creds. Workflow uploads on its behalf. | Safest. No workspace can touch another's prefix or any catalog. |
+| S3 write isolation | Workspace code gets READ-ONLY creds. Workflow uploads via s5cmd (parallel, 256 workers). | Safest. No workspace can touch another's prefix or any catalog. |
+| S3 upload tool | s5cmd (Go, conda-forge, all platforms). Shared root dependency. | 12-32x faster than AWS CLI. Parallel by default. Hetzner-documented S3 tool. |
 | Fork strategy | PRs merge code only. Data extracted fresh on upstream after merge. | No SQLite merging. Fork catalogs are disposable. |
 | State tracking | Workflow artifacts (not git) | No git commits for ephemeral state. |
 | Task contract | `pipeline` entry point chains setup → extract → validate via `depends-on` | Single command for runners. Pixi stops on failure. Language-agnostic. Locally testable. |
@@ -1033,6 +1048,7 @@ Issues discovered during architecture research that affect this design:
 This architecture was informed by:
 
 - **walkthru-earth/walkthru-data**: Previous attempt. Per-tap DuckLake + `aws s3 cp` catalog sync. No pixi, no validation, no merge strategy. Abandoned.
+- **walkthru-earth/walkthru-overture-index**: Overture Maps index builder. DuckDB reads from S3, writes Parquet locally, s5cmd uploads in parallel. Validated s5cmd as the fastest S3 upload tool for bulk Parquet directories.
 - **berndsen-io/ducklake-hetzner**: DuckLake on Hetzner with PostgreSQL catalog + S3. Good pattern for `init.sql` secrets, but we avoid the PostgreSQL dependency.
 - **Cyclenerd/hcloud-github-runner**: Ephemeral Hetzner runners for GitHub Actions. Three-job pattern (create → work → delete always). 97-99% cheaper than GitHub runners. Hourly billing.
 - **walkthru-earth/indices/walkthru-weather-index**: GPU pipeline on Hugging Face Jobs. Event-driven (detect-new-data.yml polls NOAA S3, dispatches per-file HF Jobs). Docker image built on push. `huggingface_hub.run_job()` API for submission. A10G GPU, 2h timeout. Auto STAC catalog rebuild when caught up.

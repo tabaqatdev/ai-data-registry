@@ -1,8 +1,20 @@
 # Project: ai-data-registry
 
 ## Overview
-Geospatial data processing mono-repo using pixi for reproducible environment management.
-Multi-workspace project — each workspace has its own `pixi.toml`, language runtime, dependencies, and tasks.
+Git-native, PR-driven data platform. Each workspace is an isolated data pipeline with its own language, dependencies, and compute backend. Contributors add workspaces via PRs. Maintainers manage infrastructure. DuckLake federates all workspace catalogs into one queryable global catalog.
+
+Full architecture: `research/architecture.md`
+
+## Data Registry Architecture (summary)
+- Workspaces declare pipeline metadata in `[tool.registry]` section of their `pixi.toml`
+- Each workspace writes Parquet to local `$OUTPUT_DIR/`, never directly to S3
+- Workflows upload to Hetzner S3 via `s5cmd` on the workspace's behalf
+- Runner backends: `github` (free, lightweight), `hetzner` (ephemeral ARM), `huggingface` (GPU/Docker)
+- Contributors pick backend + flavor from supported list. Maintainer manages all infra.
+- DuckLake: one SQLite catalog per workspace + one global. Zero-copy federation via `ducklake_add_data_files()`
+- Task contract: `pipeline` entry point chains `setup` -> `extract` -> `validate` via `depends-on`
+- PR validation: 4 layers (static analysis, collision detection, live catalog check, dry-run)
+- See `.claude/rules/workspace-contract.md` for the full MUST/MUST NOT contract
 
 ## Package Manager: Pixi
 - **Config**: Each workspace has its own `pixi.toml`
@@ -17,13 +29,18 @@ Multi-workspace project — each workspace has its own `pixi.toml`, language run
 
 ```
 ai-data-registry/
-├── pixi.toml              # Root — shared tools (GDAL, DuckDB, gpio, pnpm, Python)
+├── pixi.toml              # Root — shared tools (GDAL, DuckDB, gpio, s5cmd, pnpm, Python)
 ├── pixi.lock              # Single lock file for ALL workspaces
 ├── .claude/               # AI rules, skills, agents, commands (project-wide)
-├── workspace-a/
-│   └── pixi.toml          # Own runtime, deps, tasks (NO separate pixi.lock)
-├── workspace-b/
-│   └── pixi.toml
+├── research/
+│   └── architecture.md    # Full platform architecture
+├── workspaces/
+│   ├── weather/           # backend: hetzner
+│   │   └── pixi.toml      # [tool.registry] + deps + tasks
+│   ├── sanctions/         # backend: github (lightweight)
+│   │   └── pixi.toml
+│   └── weather-index/     # backend: huggingface (GPU)
+│       └── pixi.toml
 ```
 
 ### Creating a Sub-Workspace
@@ -45,7 +62,7 @@ Or use /new-workspace <name> <language> for guided setup.
 ### Workspace Isolation Principles
 
 **What lives in root `pixi.toml` (shared):**
-- GDAL, DuckDB, gpio, pnpm, Python, Node.js — tools used by ALL workspaces
+- GDAL, DuckDB, gpio, s5cmd, pnpm, Python, Node.js — tools used by ALL workspaces
 - Cross-workspace orchestration tasks only
 
 **What lives in each workspace `pixi.toml` (isolated):**
@@ -78,11 +95,13 @@ pixi add -w workspace-a --pypi <pkg>
 ---
 
 ## Conventions
-- **All tools run through pixi** — never run `duckdb`, `gdal`, `gpio`, `python`, `node`, `pnpm` directly
+- **All tools run through pixi** — never run `duckdb`, `gdal`, `gpio`, `s5cmd`, `python`, `node`, `pnpm` directly
 - `pixi run pnpm` — NEVER npm or yarn (npm is denied in settings.json)
 - **GeoParquet is the standard interchange format** — validate with `pixi run gpio check all`
 - New unified `gdal` CLI (v3.11+) — NOT legacy `ogr2ogr`/`gdalinfo`/`ogrinfo`
 - Tasks in `[tasks]` of each workspace's `pixi.toml`, not Makefiles
+- Workspaces write to `$OUTPUT_DIR/`, never to S3 directly. Workflows upload via `pixi run s5cmd`
+- Every workspace must have `[tool.registry]` metadata and required tasks (see `workspace-contract` rule)
 - Never commit `.pixi/` environments (only `.pixi/config.toml` is tracked)
 - `pixi.lock` is committed but treated as binary (see `.gitattributes`)
 
@@ -111,6 +130,7 @@ Rules load automatically when working with matching files. Path-scoped rules onl
 |------|-------|-------------------|-----------------|
 | `tool-execution.md` | Global | Always | All tools via `pixi run`, workspace targeting patterns |
 | `pixi.md` | `**/pixi.toml`, `**/pixi.lock` | Editing pixi config | Deps format, tasks, workspace registration, platform-specific patterns |
+| `workspace-contract.md` | `**/pixi.toml` | Editing workspace config | `[tool.registry]` contract: required tasks, runner backends, license, checks |
 | `workspaces.md` | Global | Always | Isolation principles, workspace creation, shared vs isolated deps |
 | `duckdb.md` | `**/*.sql`, `**/*.py` | SQL or Python files | DuckDB dialect, Friendly SQL, spatial extension, GeoParquet best practices |
 | `geospatial.md` | `**/*.parquet`, `**/*.gpkg`, `**/*.shp`, `**/*.tif`, etc. | Spatial files | GeoParquet as standard, tool selection (gpio vs gdal vs duckdb), CRS rules |
@@ -122,7 +142,7 @@ Slash commands for common operations. Invoked directly (e.g., `/new-workspace`).
 
 | Command | Usage | What it does |
 |---------|-------|------|
-| `/new-workspace` | `<name> <language>` | Scaffold a sub-workspace: init, add runtime, register, generate tasks |
+| `/new-workspace` | `<name> <language>` | Scaffold a sub-workspace with full contract: init, register, `[tool.registry]`, required tasks, license |
 | `/env-info` | (no args) | Show pixi env, installed packages, tool versions, registered workspaces |
 | `/add-dep` | `<package> [--pypi] [-w workspace]` | Add dependency (conda-forge preferred, PyPI fallback) |
 | `/query` | `<SQL or description>` | Run DuckDB query via `pixi run duckdb` |
@@ -151,7 +171,7 @@ Agents are spawned as subprocesses for complex tasks. They run autonomously and 
 |-------|---------------|------|
 | **data-explorer** | Proactively when investigating any data file | Profiles datasets: row count, schema, nulls, types, CRS, geometry, Parquet metadata |
 | **data-quality** | When validating data integrity | Deep checks: null rates, cardinality, duplicates, outliers, geometry validity, CRS consistency, GeoParquet spec |
-| **pipeline-orchestrator** | When planning multi-step workflows | Routes operations to right tool (GDAL/DuckDB/gpio), generates pixi task definitions, plans step order |
+| **pipeline-orchestrator** | When planning multi-step workflows | Routes to right tool (GDAL/DuckDB/gpio), generates contract-compliant pixi tasks, knows runner backends and S3 upload pattern |
 
 ---
 
@@ -166,6 +186,7 @@ Agents are spawned as subprocesses for complex tasks. They run autonomously and 
 | pnpm | >=10.32.1 | `pixi run pnpm ...` | Node package manager (NEVER npm) |
 | Python | >=3.12.13 | `pixi run python ...` | Default runtime |
 | Node.js | via pixi | `pixi run node ...` | Node.js runtime |
+| s5cmd | >=2.3.0 | `pixi run s5cmd ...` | Parallel S3 uploads (256 workers, 12-32x faster than AWS CLI) |
 
 ## Platforms
 osx-arm64, linux-64, win-64 — all dependencies must be cross-platform compatible.
@@ -196,14 +217,17 @@ The **duckdb** skill documents all ArcGIS macros in [arcgis.md](/.claude/skills/
 | Profile ArcGIS dataset | **data-explorer** agent | Uses arcgis macros for FeatureServer profiling |
 
 ## Watch Out For
-- Run **env-check** skill after setup or when things break — it validates everything
+- Run **env-check** skill after setup or when things break -- it validates everything
 - Always run `pixi install` after pulling to sync the environment
 - GDAL version must match libgdal-arrow-parquet version
-- GDAL: `vector convert` is format-only; use `vector reproject -d EPSG:xxxx` for CRS changes
+- GDAL: `vector convert` is format-only. Use `vector reproject -d EPSG:xxxx` for CRS changes
 - gpio: install via `pixi add --pypi geoparquet-io --pre` (PyPI beta, not on conda-forge)
 - DuckDB spatial extension: `INSTALL spatial; LOAD spatial;` (or use **duckdb** skill, [state.md](/.claude/skills/duckdb/references/state.md) reference)
 - Always validate GeoParquet: `pixi run gpio check all <file>`
-- Use `pixi run pnpm` not `npm` — npm is denied in settings.json
-- Python 3.12 is the runtime — stable and widely supported
-- Each workspace may use a different language — check its `pixi.toml` first
-- Never mix workspace dependencies — isolation is enforced
+- Use `pixi run pnpm` not `npm` -- npm is denied in settings.json
+- Python 3.12 is the runtime -- stable and widely supported
+- Each workspace may use a different language -- check its `pixi.toml` first
+- Never mix workspace dependencies -- isolation is enforced
+- Use `/new-workspace` to scaffold workspaces with full contract compliance
+- Workspace code writes to `$OUTPUT_DIR/`, never to S3. The workflow handles uploads via s5cmd
+- Runner backend + flavor must be from the supported list (see `workspace-contract` rule)
