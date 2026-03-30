@@ -1,9 +1,10 @@
 ---
 name: duckdb
 description: >
-  DuckDB v1.5 spatial/GIS analytics with 155+ ST_* functions. Use for SQL queries,
-  file exploration, spatial analysis, GeoParquet, ArcGIS REST, DuckLake, session
-  state, docs search, or extension management, even without saying "DuckDB".
+  DuckDB v1.5 spatial/GIS analytics with ST_*, H3, A5, and S2/geography extensions.
+  Use for SQL queries, file exploration, spatial analysis, discrete global grids,
+  GeoParquet, ArcGIS REST, DuckLake, session state, docs search, or extension
+  management, even without saying "DuckDB".
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
@@ -25,6 +26,9 @@ Read the relevant reference when working on a specific task.
 | [spatial.md](references/spatial.md) | ST_* spatial functions, geometry ops, CRS transforms, spatial joins |
 | [arcgis.md](references/arcgis.md) | ArcGIS REST macros (19 macros), pagination, proxy, authentication |
 | [ducklake.md](references/ducklake.md) | DuckLake open data lake format, time travel, snapshots, schema evolution, multi-client |
+| [h3.md](references/h3.md) | H3 hexagonal discrete global grid system (70+ functions), cell indexing, traversal, polygon conversion |
+| [a5.md](references/a5.md) | A5 pentagonal equal-area geospatial index (31 resolutions), millimeter-accurate, traversal, compaction |
+| [geography.md](references/geography.md) | S2 spherical geometry (s2_* functions), geodesic edges, S2 cell indexing, coverings, BigQuery-compatible |
 
 ## State resolution (shared by query, read-file, attach-db)
 
