@@ -46,6 +46,10 @@
       "Bash(npm *)",
       "Read(./.env)",
       "Read(./.env.*)"
+    ],
+    "ask": [
+      "Read(.claude/skills/duckdb/references/*.sql)",
+      "Grep(.claude/skills/duckdb/references/*.sql)"
     ]
   }
 }

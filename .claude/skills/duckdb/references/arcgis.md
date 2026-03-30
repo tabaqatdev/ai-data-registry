@@ -30,8 +30,8 @@ Or inside a running session: `.read .claude/skills/duckdb/references/arcgis.sql`
 | **L2** | `arcgis_check(url)` | TABLE: status, error_code, error_message, feature_count |
 | **L2** | `arcgis_raw(url)` | TABLE: response as VARIANT (debugging) |
 | **L2** | `arcgis_query(url)` | TABLE: properties + geometry (f=geojson, no CRS) |
-| **L2** | `arcgis_read(url, crs)` | TABLE: properties + geometry WITH CRS (f=geojson) |
-| **L2** | `arcgis_read_json(url, crs)` | TABLE: attrs JSON + geometry (f=json fallback, ring-safe) |
+| **L2** | `arcgis_read(url, crs)` | TABLE: properties + geometry WITH CRS (f=geojson). **crs must be VARCHAR** e.g. `'EPSG:4326'`, not integer |
+| **L2** | `arcgis_read_json(url, crs)` | TABLE: attrs JSON + geometry (f=json fallback, ring-safe). **crs must be VARCHAR** |
 | **L2** | `arcgis_stats(query_url)` | TABLE: attrs JSON (server-side statistics, f=json) |
 | **L2** | `arcgis_query_extent(query_url)` | TABLE: xmin..ymax, feature_count, extent_geom |
 
@@ -53,9 +53,17 @@ SELECT * FROM arcgis_extent('https://.../FeatureServer/0?f=json');
 SELECT * FROM arcgis_count('https://.../FeatureServer/0/query?where=1%3D1');
 SELECT * FROM arcgis_ids('https://.../FeatureServer/0/query?where=1%3D1');
 
--- Download features with CRS
+-- Download features with CRS (crs MUST be a string, e.g. 'EPSG:4326', never an integer)
 SELECT * FROM arcgis_read(
-    'https://.../FeatureServer/0/query?where=1%3D1&outFields=%2A&outSR=4326&returnGeometry=true&f=geojson');
+    'https://.../FeatureServer/0/query?where=1%3D1&outFields=%2A&outSR=4326&returnGeometry=true&f=geojson',
+    'EPSG:4326');
+
+-- Export to GeoParquet (paginate first if count > maxRecordCount)
+COPY (
+    SELECT * FROM arcgis_read(
+        'https://.../FeatureServer/0/query?where=1%3D1&outFields=%2A&outSR=4326&returnGeometry=true&f=geojson',
+        'EPSG:4326')
+) TO 'output.parquet' (FORMAT PARQUET);
 
 -- Server-side statistics (no data transfer)
 SELECT * FROM arcgis_stats(
@@ -101,6 +109,46 @@ CREATE OR REPLACE MACRO resolve_domain(field_val, field_name) AS
         (SELECT all_domains[field_name] FROM _domains)[TRY_CAST(field_val AS INTEGER)::VARCHAR]
     );
 ```
+
+## ArcGIS to GeoParquet (complete workflow)
+
+Always follow these steps when downloading an ArcGIS layer to GeoParquet:
+
+```sql
+-- Step 1: Discover layers
+SELECT * FROM arcgis_layers('https://server/.../MapServer?f=json');
+
+-- Step 2: Check feature count (determines if pagination is needed)
+SELECT * FROM arcgis_count('https://server/.../MapServer/0/query?where=1%3D1&f=json');
+
+-- Step 3a: Small layer (count <= maxRecordCount, typically 1000-2000)
+COPY (
+    SELECT * FROM arcgis_read(
+        'https://server/.../MapServer/0/query?where=1%3D1&outFields=%2A&outSR=4326&returnGeometry=true&f=geojson',
+        'EPSG:4326')
+) TO 'output.parquet' (FORMAT PARQUET);
+
+-- Step 3b: Large layer (count > maxRecordCount) — paginate with orderByFields
+COPY (
+    SELECT unnest(feature.properties),
+           ST_SetCRS(ST_GeomFromGeoJSON(feature.geometry), 'EPSG:4326') AS geometry
+    FROM (
+        SELECT unnest(features) AS feature
+        FROM read_json_auto([
+            'https://server/.../MapServer/0/query?where=1%3D1&outFields=%2A&outSR=4326'
+            '&returnGeometry=true&orderByFields=OBJECTID+ASC'
+            '&resultOffset=' || x::VARCHAR || '&resultRecordCount=1000&f=geojson'
+            FOR x IN range(0, <total_count + 1000>, 1000)
+        ])
+    )
+) TO 'output.parquet' (FORMAT PARQUET);
+```
+
+**Critical rules:**
+- CRS parameter MUST be a VARCHAR string like `'EPSG:4326'`, never an integer like `4326`
+- Always check `arcgis_count()` first to decide between simple vs paginated download
+- Use `orderByFields=OBJECTID+ASC` for reliable pagination (prevents duplicates/gaps)
+- Set `resultRecordCount` to match the server's `maxRecordCount` (check via `arcgis_meta`)
 
 ## Reverse Proxy (proxy.ashx-style)
 

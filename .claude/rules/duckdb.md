@@ -31,6 +31,7 @@ COPY (
 Then validate: `pixi run gpio check all output.parquet`
 
 ## Common Pitfalls
+- **ST_SetCRS requires VARCHAR, not INTEGER**: `ST_SetCRS(geom, 4326)` fails. Always pass a string: `ST_SetCRS(geom, 'EPSG:4326')`. This applies to `arcgis_read(url, crs)` and `arcgis_read_json(url, crs)` too.
 - **INTEGER vs DATE comparison**: DuckDB does NOT auto-cast integers to dates. If a column stores dates as integers (e.g., `20260324`), cast explicitly before comparing:
   ```sql
   -- WRONG: AND SQLDATE >= CURRENT_DATE - INTERVAL '7 days'
@@ -48,6 +49,11 @@ Then validate: `pixi run gpio check all output.parquet`
   ```
 - Use `CREATE SECRET` with `PROVIDER credential_chain` for automatic credential discovery
 - For public buckets: `SET s3_access_key_id = ''; SET s3_secret_access_key = '';`
+
+## SQL Reference Files
+- `.sql` files in `.claude/skills/duckdb/references/` (e.g., `state.sql`, `arcgis.sql`) are runtime files loaded via `-init`. Reading them requires user approval (ask permission in `settings.json`).
+- Prefer the `.md` documentation first (e.g., `arcgis.md` documents all ArcGIS macros, `state.md` documents session state).
+- To use the macros, pass the `.sql` file to DuckDB: `pixi run duckdb -init ".claude/skills/duckdb/references/arcgis.sql"`
 
 ## Session State
 - Use the **duckdb** skill ([state.md](../skills/duckdb/references/state.md) reference) to initialize and manage `state.sql` (extensions, credentials, macros)
