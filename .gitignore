@@ -20,3 +20,5 @@ CLAUDE.local.md
 data/
 .env
 *.env
+*.gitignore
+*.gitattributes

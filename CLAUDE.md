@@ -36,10 +36,11 @@ cd ..
 pixi workspace register --name my-workspace --path my-workspace
 
 # Add deps targeting the workspace (from root):
+# Or with Claude Code: /new-workspace my-workspace python
 pixi add -w my-workspace python
 pixi add -w my-workspace <other-deps>
 ```
-Or use `/project:new-workspace <name> <language>` for guided setup.
+Or use /new-workspace <name> <language> for guided setup.
 
 ### Workspace Isolation Principles
 
@@ -117,17 +118,17 @@ Rules load automatically when working with matching files. Path-scoped rules onl
 
 ## Reference: Commands (`.claude/commands/`)
 
-Slash commands for common operations. Invoked as `/project:<name>`. All use `pixi run` and work cross-platform.
+Slash commands for common operations. Invoked directly (e.g., `/new-workspace`). All use `pixi run` and work cross-platform.
 
 | Command | Usage | What it does |
 |---------|-------|------|
-| `/project:new-workspace` | `<name> <language>` | Scaffold a sub-workspace: init, add runtime, register, generate tasks |
-| `/project:env-info` | (no args) | Show pixi env, installed packages, tool versions, registered workspaces |
-| `/project:add-dep` | `<package> [--pypi] [-w workspace]` | Add dependency (conda-forge preferred, PyPI fallback) |
-| `/project:query` | `<SQL or description>` | Run DuckDB query via `pixi run duckdb` |
-| `/project:run-in` | `<workspace> <task>` | Run a pixi task in a specific workspace |
-| `/project:inspect-file` | `<file-path>` | Inspect any data file — schema, row count, samples, spatial info |
-| `/project:convert` | `<input> <output>` | Convert between geospatial formats (GeoParquet, GeoJSON, GeoPackage, etc.) |
+| `/new-workspace` | `<name> <language>` | Scaffold a sub-workspace: init, add runtime, register, generate tasks |
+| `/env-info` | (no args) | Show pixi env, installed packages, tool versions, registered workspaces |
+| `/add-dep` | `<package> [--pypi] [-w workspace]` | Add dependency (conda-forge preferred, PyPI fallback) |
+| `/query` | `<SQL or description>` | Run DuckDB query via `pixi run duckdb` |
+| `/run-in` | `<workspace> <task>` | Run a pixi task in a specific workspace |
+| `/inspect-file` | `<file-path>` | Inspect any data file — schema, row count, samples, spatial info |
+| `/convert` | `<input> <output>` | Convert between geospatial formats (GeoParquet, GeoJSON, GeoPackage, etc.) |
 
 ## Reference: Skills (`.claude/skills/`)
 
