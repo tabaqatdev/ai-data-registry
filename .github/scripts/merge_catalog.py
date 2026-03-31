@@ -101,17 +101,6 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
     ws_catalog_local = os.path.join(catalog_dir, f"{workspace}.ducklake")
     global_catalog_local = os.path.join(catalog_dir, "catalog.ducklake")
 
-    print(f"Downloading workspace catalog: {ws_catalog_s3}")
-    if not download_catalog(ws_catalog_s3, ws_catalog_local):
-        print(f"  ERROR: Failed to download workspace catalog for '{workspace}'.")
-        return False
-
-    print(f"Downloading global catalog: {global_catalog_s3}")
-    if not download_catalog(global_catalog_s3, global_catalog_local):
-        print(f"  INFO: No global catalog found. Will create a new one.")
-        # Create an empty global catalog
-        global_catalog_local = os.path.join(catalog_dir, "catalog.ducklake")
-
     # Merge using DuckDB
     try:
         import duckdb
@@ -129,7 +118,6 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
     secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
 
     if endpoint:
-        # Extract just the hostname for DuckDB s3_endpoint
         from urllib.parse import urlparse
         parsed = urlparse(endpoint)
         s3_host = parsed.hostname or endpoint.replace("https://", "").replace("http://", "")
@@ -141,18 +129,92 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
     if secret_key:
         con.execute("SET s3_secret_access_key = ?", [secret_key])
 
-    # Attach workspace catalog (read-only)
-    try:
-        con.execute(f"""
-            ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (READ_ONLY)
-        """)
-    except duckdb.Error as e:
-        print(f"  ERROR: Failed to attach workspace catalog: {e}")
-        con.close()
-        return False
+    # Download workspace catalog, or bootstrap from S3 Parquet files
+    ws_bootstrap = False
+    print(f"Downloading workspace catalog: {ws_catalog_s3}")
+    if not download_catalog(ws_catalog_s3, ws_catalog_local):
+        print(f"  INFO: No workspace catalog found. Bootstrapping from S3 Parquet files.")
+        ws_bootstrap = True
+
+    print(f"Downloading global catalog: {global_catalog_s3}")
+    if not download_catalog(global_catalog_s3, global_catalog_local):
+        print(f"  INFO: No global catalog found. Will create a new one.")
+
+    # S3 data path for this workspace
+    ws_data_prefix = f"s3://{bucket}/{schema}/"
+    data_path = f"s3://{bucket}/"
+
+    if ws_bootstrap:
+        # First run: create workspace catalog from Parquet files on S3
+        try:
+            con.execute(f"""
+                ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (
+                    DATA_PATH '{ws_data_prefix}'
+                )
+            """)
+            con.execute(f'CREATE SCHEMA IF NOT EXISTS ws."{schema}"')
+
+            # Discover Parquet files on S3 and infer schema
+            parquet_glob = f"{ws_data_prefix}*.parquet"
+            cols = con.execute(f"""
+                SELECT column_name, column_type
+                FROM (DESCRIBE SELECT * FROM read_parquet('{parquet_glob}'))
+            """).fetchall()
+
+            if not cols:
+                print(f"  ERROR: No Parquet files found at {parquet_glob}")
+                con.close()
+                return False
+
+            col_defs = ", ".join(f'"{name}" {dtype}' for name, dtype in cols)
+            con.execute(f'CREATE TABLE ws."{schema}"."{table}" ({col_defs})')
+
+            # List actual Parquet files and register them
+            files = con.execute(f"""
+                SELECT file FROM glob('{parquet_glob}')
+            """).fetchall()
+            file_count = 0
+            for (f,) in files:
+                try:
+                    con.execute(f"""
+                        CALL ducklake_add_data_files('ws', '{table}', '{f}',
+                            schema => '{schema}',
+                            allow_missing => true,
+                            ignore_extra_columns => true
+                        )
+                    """)
+                    file_count += 1
+                except duckdb.Error as e:
+                    print(f"  WARNING: Failed to register {f} in workspace catalog: {e}")
+
+            print(f"  Bootstrapped workspace catalog with {file_count} file(s).")
+
+            # Upload the new workspace catalog to S3
+            con.execute("DETACH ws")
+            print(f"Uploading workspace catalog: {ws_catalog_s3}")
+            if not upload_catalog(ws_catalog_local, ws_catalog_s3):
+                print(f"  WARNING: Failed to upload workspace catalog.")
+
+            # Re-attach as read-only for the merge step
+            con.execute(f"""
+                ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (READ_ONLY)
+            """)
+        except duckdb.Error as e:
+            print(f"  ERROR: Failed to bootstrap workspace catalog: {e}")
+            con.close()
+            return False
+    else:
+        # Attach existing workspace catalog (read-only)
+        try:
+            con.execute(f"""
+                ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (READ_ONLY)
+            """)
+        except duckdb.Error as e:
+            print(f"  ERROR: Failed to attach workspace catalog: {e}")
+            con.close()
+            return False
 
     # Attach global catalog (read-write, create if not exists)
-    data_path = f"s3://{bucket}/"
     try:
         con.execute(f"""
             ATTACH 'ducklake:sqlite:{global_catalog_local}' AS global_cat (
@@ -174,11 +236,9 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
     try:
         con.execute(f'SELECT 1 FROM global_cat."{schema}"."{table}" LIMIT 0')
     except duckdb.Error:
-        # Table doesn't exist, create it from workspace schema
         print(f"  Creating table {schema}.{table} in global catalog...")
         try:
             con.execute(f'CREATE SCHEMA IF NOT EXISTS global_cat."{schema}"')
-            # Get CREATE TABLE from workspace
             cols = con.execute(f"""
                 SELECT column_name, data_type
                 FROM information_schema.columns
