@@ -26,17 +26,16 @@ ai-data-registry/
 ├── pixi.lock              # Single lock file for ALL workspaces
 ├── CONTRIBUTING.md        # Contributor guide (workspace creation, contract, PR flow)
 ├── MAINTAINING.md         # Maintainer guide (CI/CD, DuckLake, infra, debugging)
-├── .claude/               # AI rules, skills, agents, commands
 ├── .github/
 │   ├── registry.config.toml  # Backend definitions, storage secret names
-│   ├── scripts/               # CI scripts (uv + PEP 723 inline deps)
-│   └── workflows/             # GitHub Actions
+│   ├── scripts/               # CI scripts (10 Python, uv + PEP 723)
+│   └── workflows/             # 11 workflows (validation, extraction, scheduling)
+├── workspaces/
+│   └── test-minimal/      # Reference implementation
 ├── research/
 │   └── architecture.md    # Full platform architecture
-└── workspaces/
-    ├── test-minimal/      # Reference implementation
-    ├── weather/           # backend: hetzner
-    └── sanctions/         # backend: github
+├── docs/                  # secrets-setup.md, tool-versions.md
+└── .claude/               # 8 rules, 7 commands, 6 skills, 3 agents
 ```
 
 ## Shared Tools (always via `pixi run`)

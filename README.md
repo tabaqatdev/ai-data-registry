@@ -36,7 +36,18 @@ flowchart LR
 
 Each workspace is an isolated pipeline with its own language, deps, and compute backend. [DuckLake](https://ducklake.select/) federates all outputs into one queryable global catalog via zero-copy file registration.
 
-## Quick Start
+## Getting Started
+
+**Two ways to use this project:**
+
+| Path | Who | How |
+|------|-----|-----|
+| **Contribute a workspace** | Data engineers, researchers | Fork, add a workspace, open a PR |
+| **Create your own registry** | Organizations, platform maintainers | Use as GitHub template, configure infra |
+
+> **Creating your own registry?** See [docs/template-setup.md](docs/template-setup.md) for template initialization, S3 configuration, and backend setup.
+
+### Contribute a Workspace (Fork)
 
 **Prerequisites:** [Pixi](https://pixi.sh) (`brew install pixi` or `curl -fsSL https://pixi.sh/install.sh | bash`)
 
@@ -190,27 +201,40 @@ Workspace code has READ-ONLY S3 access. The workflow handles uploads with write 
 ai-data-registry/
 ├── pixi.toml                  # Shared tools (GDAL, DuckDB, gpio, s5cmd, pnpm)
 ├── pixi.lock                  # Single lock for all workspaces
-├── CONTRIBUTING.md            # Contributor guide
-├── MAINTAINING.md             # Maintainer guide
+├── CLAUDE.md                  # AI instructions (shared core + role router)
+├── CONTRIBUTING.md            # Contributor guide (workspace creation, contract, PR)
+├── MAINTAINING.md             # Maintainer guide (CI/CD, DuckLake, infra)
+├── README.md
+├── LICENSE
 ├── .github/
 │   ├── registry.config.toml   # Backend + storage config
-│   ├── scripts/               # CI scripts (uv + PEP 723)
-│   └── workflows/             # Validation, extraction, scheduling
+│   ├── scripts/               # CI scripts (10 Python, uv + PEP 723)
+│   └── workflows/             # 11 workflows (validation, extraction, scheduling)
 ├── workspaces/
 │   └── test-minimal/          # Reference implementation
+│       ├── pixi.toml          # Full [tool.registry] contract example
+│       ├── extract.py         # Extraction script (writes to $OUTPUT_DIR)
+│       └── validate_local.py  # Local validation
 ├── research/
-│   └── architecture.md        # Full architecture doc
+│   └── architecture.md        # Full platform architecture
 ├── docs/
 │   ├── secrets-setup.md       # Repository secrets reference
 │   └── tool-versions.md       # Shared tool versions + deps guide
-└── .claude/                   # AI rules, skills, agents, commands
+└── .claude/
+    ├── rules/                 # 8 rules (auto-load by file path)
+    ├── commands/              # 7 slash commands
+    ├── skills/                # 6 skills (duckdb, gdal, geoparquet, etc.)
+    └── agents/                # 3 agents (data-explorer, data-quality, pipeline)
 ```
 
-## Fork Setup (Maintainer)
+## Registry Setup (Template Users)
 
-1. **Configure storage** in `.github/registry.config.toml` (defaults work for most setups)
-2. **Set repository secrets** per [docs/secrets-setup.md](docs/secrets-setup.md)
-3. **Push and open a PR** with a workspace under `workspaces/` to verify
+If you created this repo from the GitHub template, see [docs/template-setup.md](docs/template-setup.md) for full instructions. Quick version:
+
+1. Run `./setup.sh` (or `.\setup.ps1` on Windows)
+2. Configure storage in `.github/registry.config.toml`
+3. Set repository secrets per [docs/secrets-setup.md](docs/secrets-setup.md)
+4. Open a PR with a workspace to verify
 
 ## Shared Tools
 
@@ -218,12 +242,12 @@ All tools run through pixi. Never run directly.
 
 | Tool | Command |
 |------|---------|
-| GDAL >=3.12 | `pixi run gdal ...` |
-| DuckDB >=1.5 | `pixi run duckdb ...` |
-| gpio | `pixi run gpio ...` |
-| s5cmd | `pixi run s5cmd ...` |
+| GDAL >=3.12.3 | `pixi run gdal ...` |
+| DuckDB >=1.5.1 | `pixi run duckdb ...` |
+| gpio 1.0.0b2 | `pixi run gpio ...` |
+| s5cmd >=2.3.0 | `pixi run s5cmd ...` |
 | Python >=3.12 | `pixi run python ...` |
-| pnpm | `pixi run pnpm ...` |
+| pnpm >=10.32.1 | `pixi run pnpm ...` |
 
 Full versions and dependency guide: [docs/tool-versions.md](docs/tool-versions.md)
 
@@ -246,6 +270,7 @@ This repo includes a full AI-assisted development setup in `.claude/`. Contribut
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Workspace creation, contract, PR flow |
 | [MAINTAINING.md](MAINTAINING.md) | Maintainers | CI/CD, DuckLake, infra, debugging |
 | [research/architecture.md](research/architecture.md) | Both | Full platform architecture |
+| [docs/template-setup.md](docs/template-setup.md) | Template users | Create your own registry from template |
 | [docs/secrets-setup.md](docs/secrets-setup.md) | Maintainers | Repository secrets configuration |
 | [docs/tool-versions.md](docs/tool-versions.md) | Both | Shared tool versions and deps guide |
 
