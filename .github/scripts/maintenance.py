@@ -97,14 +97,18 @@ def maintain_catalog(s3_path: str, local_dir: str, dry_run: bool = False) -> boo
     endpoint = os.environ.get("S3_ENDPOINT_URL", "")
     access_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
     secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    region = os.environ.get("S3_REGION", "")
 
     if endpoint:
         from urllib.parse import urlparse
         parsed = urlparse(endpoint)
         s3_host = parsed.hostname or endpoint.replace("https://", "").replace("http://", "")
         con.execute("SET s3_endpoint = ?", [s3_host])
+        con.execute("SET s3_url_style = 'path'")
         if parsed.scheme == "https":
             con.execute("SET s3_use_ssl = true")
+    if region:
+        con.execute("SET s3_region = ?", [region])
     if access_key:
         con.execute("SET s3_access_key_id = ?", [access_key])
     if secret_key:
