@@ -1,0 +1,45 @@
+[workspace]
+authors = ["yharby <me@youssefharby.com>"]
+channels = ["conda-forge"]
+name = "opensky-flights"
+platforms = ["osx-arm64", "linux-64", "win-64"]
+version = "0.1.0"
+
+[dependencies]
+python = ">=3.12,<4"
+
+[pypi-dependencies]
+duckdb = ">=1.5.1"
+
+[tasks]
+extract = "python extract.py"
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
+
+[tool.registry]
+description = "Live worldwide flight positions from the OpenSky Network ADS-B API"
+schedule = "*/15 * * * *"
+timeout = 10
+tags = ["aviation", "flights", "ads-b", "opensky", "real-time"]
+schema = "opensky-flights"
+table = "states"
+mode = "append"
+partition_by = "snapshot_date"
+
+[tool.registry.runner]
+backend = "github"
+flavor = "ubuntu-latest"
+
+[tool.registry.license]
+code = "Apache-2.0"
+data = "ODbL-1.0"
+data_source = "OpenSky Network"
+mixed = false
+
+[tool.registry.checks]
+min_rows = 1000
+max_null_pct = 20
+geometry = true
+unique_cols = ["icao24"]
+schema_match = true
