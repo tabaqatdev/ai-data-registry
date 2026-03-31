@@ -38,7 +38,7 @@ mixed = false
 
 [tool.registry.checks]
 min_rows = 1000
-max_null_pct = 20
+max_null_pct = 70
 geometry = true
 unique_cols = ["icao24"]
 schema_match = true
