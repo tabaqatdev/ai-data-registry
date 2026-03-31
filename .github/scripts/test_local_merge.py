@@ -6,8 +6,12 @@
 # ///
 """Local test for DuckLake catalog merge logic (no S3 needed).
 
-Creates workspace + global catalogs as local SQLite files,
-simulates extract → merge → query → incremental merge.
+Creates workspace + global catalogs as local DuckDB files,
+simulates extract -> merge -> query -> incremental merge.
+
+CRITICAL: Catalog files use the DuckDB backend (.duckdb), NOT SQLite (.ducklake).
+DuckDB catalogs support remote S3/HTTPS read-only access via httpfs.
+SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
 
 Usage: uv run .github/scripts/test_local_merge.py
 """
@@ -34,8 +38,8 @@ def main():
     data_dir = os.path.join(tmpdir, "data")
     os.makedirs(data_dir)
 
-    ws_catalog = os.path.join(tmpdir, "test-minimal.ducklake")
-    global_catalog = os.path.join(tmpdir, "catalog.ducklake")
+    ws_catalog = os.path.join(tmpdir, "test-minimal.duckdb")
+    global_catalog = os.path.join(tmpdir, "catalog.duckdb")
     errors = 0
 
     # ── Step 1: Extract test data (simulates pixi run -w test-minimal pipeline)
@@ -61,7 +65,7 @@ def main():
     con.execute("INSTALL ducklake; LOAD ducklake;")
 
     con.execute(f"""
-        ATTACH 'ducklake:sqlite:{ws_catalog}' AS ws (
+        ATTACH 'ducklake:{ws_catalog}' AS ws (
             DATA_PATH '{data_dir}/'
         )
     """)
@@ -98,12 +102,12 @@ def main():
 
     # Attach workspace (read-only)
     con.execute(f"""
-        ATTACH 'ducklake:sqlite:{ws_catalog}' AS ws (READ_ONLY)
+        ATTACH 'ducklake:{ws_catalog}' AS ws (READ_ONLY)
     """)
 
     # Attach global (create new)
     con.execute(f"""
-        ATTACH 'ducklake:sqlite:{global_catalog}' AS global_cat (
+        ATTACH 'ducklake:{global_catalog}' AS global_cat (
             DATA_PATH '{data_dir}/'
         )
     """)
@@ -190,7 +194,7 @@ def main():
     con.execute("INSTALL ducklake; LOAD ducklake;")
 
     con.execute(f"""
-        ATTACH 'ducklake:sqlite:{ws_catalog}' AS ws (
+        ATTACH 'ducklake:{ws_catalog}' AS ws (
             DATA_PATH '{data_dir}/'
         )
     """)
@@ -214,9 +218,9 @@ def main():
     con = duckdb.connect()
     con.execute("INSTALL ducklake; LOAD ducklake;")
 
-    con.execute(f"ATTACH 'ducklake:sqlite:{ws_catalog}' AS ws (READ_ONLY)")
+    con.execute(f"ATTACH 'ducklake:{ws_catalog}' AS ws (READ_ONLY)")
     con.execute(f"""
-        ATTACH 'ducklake:sqlite:{global_catalog}' AS global_cat (
+        ATTACH 'ducklake:{global_catalog}' AS global_cat (
             DATA_PATH '{data_dir}/'
         )
     """)

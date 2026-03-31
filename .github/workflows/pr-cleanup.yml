@@ -48,6 +48,6 @@ jobs:
 
           # Also delete any PR-scoped catalog files
           pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-            rm "s3://${S3_BUCKET}/pr/${PR_NUMBER}.ducklake" 2>/dev/null || true
+            rm "s3://${S3_BUCKET}/pr/${PR_NUMBER}.duckdb" 2>/dev/null || true
 
           echo "  Cleanup complete."

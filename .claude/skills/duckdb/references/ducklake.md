@@ -22,6 +22,8 @@ Requires DuckDB v1.3.0+.
 
 **Rule of thumb**: Start with DuckDB for local work. Move to PostgreSQL when you need multiple clients or production durability.
 
+**CRITICAL for this project**: We use the DuckDB catalog backend (.duckdb), NOT SQLite (.ducklake). DuckDB catalogs support remote S3/HTTPS read-only access via httpfs (`ATTACH 'ducklake:s3://bucket/catalog.duckdb' AS cat (READ_ONLY)`). SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
+
 ## Attach a DuckLake catalog
 
 ```sql

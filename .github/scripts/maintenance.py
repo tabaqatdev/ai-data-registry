@@ -13,6 +13,10 @@ Downloads each workspace catalog from S3, runs DuckLake CHECKPOINT
 then uploads the updated catalog back to S3.
 
 Skips the global catalog (it has auto_compact = false).
+
+CRITICAL: Catalog files use the DuckDB backend (.duckdb), NOT SQLite (.ducklake).
+DuckDB catalogs support remote S3/HTTPS read-only access via httpfs.
+SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ def list_workspace_catalogs() -> list[str]:
 
     catalogs = []
     for line in result.stdout.strip().splitlines():
-        # s5cmd ls output: "2026/03/30 12:00:00   1234  s3://bucket/.catalogs/weather.ducklake"
+        # s5cmd ls output: "2026/03/30 12:00:00   1234  s3://bucket/.catalogs/weather.duckdb"
         parts = line.strip().split()
         if not parts:
             continue
@@ -59,7 +63,7 @@ def list_workspace_catalogs() -> list[str]:
         # Skip global catalog
         if filename == global_name:
             continue
-        if filename.endswith(".ducklake"):
+        if filename.endswith(".duckdb"):
             catalogs.append(s3_path)
 
     return catalogs
@@ -68,7 +72,7 @@ def list_workspace_catalogs() -> list[str]:
 def maintain_catalog(s3_path: str, local_dir: str, dry_run: bool = False) -> bool:
     """Run maintenance on a single workspace catalog."""
     filename = s3_path.split("/")[-1]
-    ws_name = filename.replace(".ducklake", "")
+    ws_name = filename.replace(".duckdb", "")
     local_path = os.path.join(local_dir, filename)
 
     print(f"\n  Processing: {ws_name} ({filename})")
@@ -91,7 +95,6 @@ def maintain_catalog(s3_path: str, local_dir: str, dry_run: bool = False) -> boo
 
     con = duckdb.connect()
     con.execute("INSTALL ducklake; LOAD ducklake;")
-    con.execute("INSTALL sqlite; LOAD sqlite;")
 
     # Configure S3 via CREATE SECRET so DuckLake internal operations
     # use the correct endpoint and credentials.
@@ -119,7 +122,7 @@ def maintain_catalog(s3_path: str, local_dir: str, dry_run: bool = False) -> boo
 
     try:
         con.execute(f"""
-            ATTACH 'ducklake:sqlite:{local_path}' AS ws (
+            ATTACH 'ducklake:{local_path}' AS ws (
                 AUTOMATIC_MIGRATION true
             )
         """)

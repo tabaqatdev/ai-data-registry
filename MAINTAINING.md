@@ -6,10 +6,12 @@ Full architecture: `research/architecture.md`
 
 ## DuckLake Federation
 
-- One SQLite catalog per workspace on S3 (`s3://registry/.catalogs/{name}.ducklake`)
-- One global catalog (`s3://registry/catalog.ducklake`) assembled by merge queue
+- One DuckDB catalog per workspace on S3 (`s3://registry/.catalogs/{name}.duckdb`)
+- One global catalog (`s3://registry/catalog.duckdb`) assembled by merge queue
 - Zero-copy: global catalog stores pointers to workspace Parquet files via `ducklake_add_data_files()`
-- No PostgreSQL. SQLite works because only one process writes to each catalog at a time
+- No PostgreSQL. DuckDB backend works because only one process writes to each catalog at a time
+
+**CRITICAL: DuckDB catalog backend, NOT SQLite.** Catalog files use `.duckdb` extension (DuckDB backend), not `.ducklake` (SQLite backend). DuckDB catalogs support remote S3/HTTPS read-only access via httpfs, enabling `ATTACH 'ducklake:s3://bucket/catalog.duckdb' AS cat (READ_ONLY)` without downloading. SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
 
 ### Global Catalog Merge (serial, concurrency: 1)
 
@@ -34,10 +36,10 @@ Run compaction only on individual workspace catalogs (which own their data paths
 
 ```
 s3://registry/
-    .catalogs/                    # DuckLake SQLite catalogs
-        weather.ducklake          # Workspace-owned
-        census.ducklake
-    catalog.ducklake              # Global (merge-queue-owned)
+    .catalogs/                    # DuckLake catalogs (DuckDB backend)
+        weather.duckdb            # Workspace-owned
+        census.duckdb
+    catalog.duckdb                # Global (merge-queue-owned)
     weather/                      # Workspace data prefix (= schema)
         observations/
             year=2026/
@@ -45,7 +47,7 @@ s3://registry/
     pr/                           # PR staging (ephemeral, auto-cleaned)
         42/
             weather/...
-        42.ducklake               # PR-scoped catalog (optional)
+        42.duckdb                 # PR-scoped catalog (optional)
 ```
 
 **Rule:** `schema` in pixi.toml = S3 prefix = workspace write boundary.
@@ -63,7 +65,7 @@ Exception: HuggingFace backend passes S3 write creds to the container (accepted 
 ```toml
 [storage]
 catalog_prefix = ".catalogs"       # Where workspace catalogs live in S3
-global_catalog = "catalog.ducklake"
+global_catalog = "catalog.duckdb"
 staging_prefix = "pr"              # PR staging: s3://bucket/pr/{pr_number}/{schema}/
 # Secret names (values in GitHub Secrets, not here):
 # S3_ENDPOINT_URL, S3_BUCKET, S3_REGION, S3_WRITE_KEY_ID, S3_WRITE_SECRET

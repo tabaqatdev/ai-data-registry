@@ -47,9 +47,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
         run: |
-          CATALOG_PATH="${{ runner.temp }}/${{ inputs.workspace }}.ducklake"
+          CATALOG_PATH="${{ runner.temp }}/${{ inputs.workspace }}.duckdb"
           pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-            cp "s3://${S3_BUCKET}/.catalogs/${{ inputs.workspace }}.ducklake" \
+            cp "s3://${S3_BUCKET}/.catalogs/${{ inputs.workspace }}.duckdb" \
             "$CATALOG_PATH" 2>/dev/null || echo "No existing catalog found (first run)."
           echo "CATALOG_PATH=$CATALOG_PATH" >> "$GITHUB_ENV"
 
@@ -98,11 +98,11 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
         run: |
-          CATALOG_PATH="${{ runner.temp }}/${{ inputs.workspace }}.ducklake"
+          CATALOG_PATH="${{ runner.temp }}/${{ inputs.workspace }}.duckdb"
           if [ -f "$CATALOG_PATH" ]; then
             pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
               cp "$CATALOG_PATH" \
-              "s3://${S3_BUCKET}/.catalogs/${{ inputs.workspace }}.ducklake"
+              "s3://${S3_BUCKET}/.catalogs/${{ inputs.workspace }}.duckdb"
             echo "Uploaded workspace catalog."
           fi
 

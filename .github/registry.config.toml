@@ -15,7 +15,10 @@ write_secret_key_secret = "S3_WRITE_SECRET"   # S3 secret key
 
 # S3 layout (relative to bucket root)
 catalog_prefix = ".catalogs"                  # where workspace catalogs live
-global_catalog = "catalog.ducklake"           # global catalog filename at bucket root
+# CRITICAL: Catalog files use DuckDB backend (.duckdb), NOT SQLite (.ducklake).
+# DuckDB catalogs support remote S3/HTTPS read-only access. SQLite catalogs do not
+# (blocked by duckdb/ducklake#912). This enables direct querying without downloading.
+global_catalog = "catalog.duckdb"             # global catalog filename at bucket root
 staging_prefix = "pr"                         # PR staging data: pr/{pr_number}/{schema}/
 
 [backends.github]

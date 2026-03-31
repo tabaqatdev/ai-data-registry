@@ -84,7 +84,7 @@ def check_catalog(workspace_name: str) -> list[str]:
 
     # Download global catalog to temp dir
     with tempfile.TemporaryDirectory() as tmpdir:
-        local_catalog = os.path.join(tmpdir, "catalog.ducklake")
+        local_catalog = os.path.join(tmpdir, "catalog.duckdb")
 
         if not download_catalog(global_catalog_s3, local_catalog):
             print("  INFO: Global catalog not found on S3 (first run or new deployment). Skipping catalog check.")
@@ -96,11 +96,10 @@ def check_catalog(workspace_name: str) -> list[str]:
 
             con = duckdb.connect()
             con.execute("INSTALL ducklake; LOAD ducklake;")
-            con.execute("INSTALL sqlite; LOAD sqlite;")
 
             try:
                 con.execute(f"""
-                    ATTACH 'ducklake:sqlite:{local_catalog}' AS global_cat (READ_ONLY)
+                    ATTACH 'ducklake:{local_catalog}' AS global_cat (READ_ONLY)
                 """)
             except duckdb.Error as e:
                 print(f"  WARNING: Could not attach global catalog: {e}")

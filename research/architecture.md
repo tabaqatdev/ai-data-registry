@@ -6,7 +6,7 @@ A git-native, PR-driven data platform. Each workspace is an isolated data pipeli
 
 1. **Git is the source of truth** for pipeline definitions, schedules, and workspace config
 2. **Pixi is the runtime** for reproducible, cross-platform, multi-language environments
-3. **Each workspace owns its own DuckLake SQLite catalog** on S3 (no catalog in git, no PostgreSQL)
+3. **Each workspace owns its own DuckLake catalog** on S3 (DuckDB backend, not SQLite, no PostgreSQL)
 4. **One global catalog** is assembled by zero-copy `ducklake_add_data_files()` from workspace catalogs
 5. **All catalogs live on S3**, pulled at runtime, never stored in git
 6. **Free GitHub runners orchestrate**, Hetzner runners do the heavy lifting
@@ -38,8 +38,8 @@ graph TB
     subgraph "Hetzner Object Storage (S3)"
         direction TB
         S3["s3://registry/{schema}/<br/>*.parquet"]
-        CATS["s3://registry/.catalogs/<br/>{name}.ducklake"]
-        GLOBAL["s3://registry/<br/>catalog.ducklake"]
+        CATS["s3://registry/.catalogs/<br/>{name}.duckdb"]
+        GLOBAL["s3://registry/<br/>catalog.duckdb"]
     end
 
     subgraph "Free GitHub Runner"
@@ -63,7 +63,7 @@ graph TB
 ### 1. Workspace Extraction (parallel, backend-dependent)
 
 Each workspace runner (GitHub, Hetzner, or HF Jobs, depending on `[tool.registry.runner].backend`):
-1. Pulls its workspace catalog from S3 (`s3://registry/.catalogs/{name}.ducklake`)
+1. Pulls its workspace catalog from S3 (`s3://registry/.catalogs/{name}.duckdb`)
 2. Attaches it as a DuckLake with `DATA_PATH 's3://registry/{schema}/'`, `META_JOURNAL_MODE 'WAL'`, `META_BUSY_TIMEOUT 500`
 3. Runs `pixi run -w {name} pipeline` which chains setup → extract → validate (stops on failure)
 4. Uploads the updated workspace catalog back to S3
@@ -83,9 +83,9 @@ sequenceDiagram
     participant S3 as Hetzner S3
     participant MQ as Merge Queue<br/>(concurrency: 1)
 
-    MQ->>S3: Pull catalog.ducklake
-    MQ->>S3: Pull weather.ducklake
-    MQ->>S3: Pull census.ducklake
+    MQ->>S3: Pull catalog.duckdb
+    MQ->>S3: Pull weather.duckdb
+    MQ->>S3: Pull census.duckdb
 
     Note over MQ: Attach global READ_WRITE<br/>Attach workspaces READ_ONLY
 
@@ -95,7 +95,7 @@ sequenceDiagram
 
     MQ->>MQ: Diff census files:<br/>ws has 2 files, global has 2<br/>= 0 new files, skip
 
-    MQ->>S3: Push updated catalog.ducklake
+    MQ->>S3: Push updated catalog.duckdb
 ```
 
 ### Why This Works
@@ -165,11 +165,11 @@ Run compaction only on individual workspace catalogs (which own their data paths
 
 ```
 s3://registry/
-    .catalogs/                         # All DuckLake SQLite catalog files
-        weather.ducklake               # Workspace catalog (workspace-owned)
-        census.ducklake
-        osm.ducklake
-    catalog.ducklake                   # Global catalog (merge-queue-owned)
+    .catalogs/                         # All DuckLake catalogs (DuckDB backend)
+        weather.duckdb                 # Workspace catalog (workspace-owned)
+        census.duckdb
+        osm.duckdb
+    catalog.duckdb                     # Global catalog (merge-queue-owned)
 
     weather/                           # Workspace data prefix (= schema name)
         observations/                  # Table directory
@@ -187,7 +187,7 @@ s3://registry/
             weather/
                 observations/
                     ducklake-xyz789.parquet
-        42.ducklake                    # PR-scoped workspace catalog (optional)
+        42.duckdb                      # PR-scoped workspace catalog (optional)
 ```
 
 **Rule: `schema` in pixi.toml = S3 prefix = workspace write boundary.** Each workspace can only write to its own prefix.
@@ -858,28 +858,24 @@ sequenceDiagram
     Sched->>Sched: Merge into global catalog
 ```
 
-No SQLite merge complexity. The fork's catalog is local/disposable.
+No catalog merge complexity. The fork's catalog is local/disposable.
 
 ---
 
 ## Catalog Federation (Read-Time)
 
-Any DuckDB client can attach multiple catalogs simultaneously for cross-workspace queries:
+Any DuckDB client can attach multiple catalogs simultaneously for cross-workspace queries.
+DuckDB catalogs (not SQLite) support remote S3/HTTPS read-only access via httpfs:
 
 ```sql
--- Attach individual workspace catalogs for direct access
--- META_JOURNAL_MODE 'WAL' and META_BUSY_TIMEOUT improve robustness for SQLite catalogs
-ATTACH 'ducklake:sqlite:s3://registry/.catalogs/weather.ducklake' AS weather (
-    READ_ONLY, META_JOURNAL_MODE 'WAL', META_BUSY_TIMEOUT 500
-);
-ATTACH 'ducklake:sqlite:s3://registry/.catalogs/census.ducklake' AS census (
-    READ_ONLY, META_JOURNAL_MODE 'WAL', META_BUSY_TIMEOUT 500
-);
+-- Attach individual workspace catalogs directly from S3 (read-only, no download needed)
+-- CRITICAL: This requires DuckDB catalog backend (.duckdb), NOT SQLite (.ducklake).
+-- SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
+ATTACH 'ducklake:s3://registry/.catalogs/weather.duckdb' AS weather (READ_ONLY);
+ATTACH 'ducklake:s3://registry/.catalogs/census.duckdb' AS census (READ_ONLY);
 
 -- Or attach the global catalog for everything
-ATTACH 'ducklake:sqlite:s3://registry/catalog.ducklake' AS registry (
-    READ_ONLY, META_JOURNAL_MODE 'WAL', META_BUSY_TIMEOUT 500
-);
+ATTACH 'ducklake:s3://registry/catalog.duckdb' AS registry (READ_ONLY);
 
 -- Cross-catalog join
 SELECT w.city, c.pop
@@ -1012,7 +1008,7 @@ Central, vendor-agnostic config file. This is the single source of truth for bac
 endpoint_url_secret = "S3_ENDPOINT_URL"    # Secret name, not value
 bucket_secret = "S3_BUCKET"
 catalog_prefix = ".catalogs"
-global_catalog = "catalog.ducklake"
+global_catalog = "catalog.duckdb"
 staging_prefix = "pr"                      # PR staging: pr/{pr_number}/{schema}/
 
 [backends.github]
@@ -1061,9 +1057,10 @@ Issues discovered during architecture research that affect this design:
 | Issue | What | Impact | Our Mitigation |
 |-------|------|--------|----------------|
 | **#579** | `add_data_files` does not extract hive partition metadata from file paths | Partition pruning won't work for zero-copy registered files. Queries scan all files. | Accept for now. For large tables, run compaction on workspace catalog (which rewrites with proper metadata), not global. |
-| **#572** | SQLite catalog bloat: 369MB metadata for 823MB data | Per-file column stats inflate the catalog. | Monitor workspace catalog sizes. If global catalog exceeds ~50MB, rebuild it fresh. |
-| **#128** | SQLite concurrent writes fail | Confirmed single-writer limitation. | Already mitigated: one writer per catalog at all times. |
-| **#561** | Concurrent ATTACH to same SQLite file fails | Multiple processes can't open the same .ducklake file. | Already mitigated: merge queue runs serial, workspace runners are isolated. |
+| **#572** | Catalog metadata bloat: 369MB metadata for 823MB data | Per-file column stats inflate the catalog. | Monitor workspace catalog sizes. If global catalog exceeds ~50MB, rebuild it fresh. |
+| **#128** | Concurrent writes to same catalog fail | Single-writer limitation. | Already mitigated: one writer per catalog at all times. |
+| **#561** | Concurrent ATTACH to same catalog file fails | Multiple processes can't open the same catalog file. | Already mitigated: merge queue runs serial, workspace runners are isolated. |
+| **#912** | SQLite catalogs do not support remote S3/HTTPS access | `ducklake:sqlite:s3://...` fails with "Unsupported parameter: storage_version". | Resolved: switched to DuckDB catalog backend (.duckdb) which supports remote access. |
 | **#300** | Orphaned Parquet files on failed inserts | Runner crash = files on S3 without catalog entry. | Maintenance job can detect orphans via `ducklake_delete_orphaned_files`. |
 | **#680** | Corrupt Parquet from unsafe shutdown | Runner OOM/kill leaves partial files. | Validate Parquet files before registering in global catalog. |
 | **#791** | `add_data_files` fails on partitioned tables when partition column is also in the Parquet file | Cannot register partitioned files directly when partition col exists in data. | Avoid partitioning on columns present in Parquet for zero-copy registration. |

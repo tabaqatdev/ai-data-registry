@@ -13,6 +13,11 @@ file lists, and registers only NEW files in the global catalog via
 ducklake_add_data_files(). Uploads the updated global catalog back to S3.
 
 Runs with concurrency: 1 to prevent concurrent writes to the global catalog.
+
+CRITICAL: Catalog files use the DuckDB backend (.duckdb), NOT SQLite (.ducklake).
+DuckDB catalogs support remote S3/HTTPS read-only access via httpfs, enabling
+direct querying without downloading. SQLite catalogs do NOT support remote access
+(blocked by duckdb/ducklake#912).
 """
 
 from __future__ import annotations
@@ -95,11 +100,11 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
         return False
 
     # Download catalogs
-    ws_catalog_s3 = f"s3://{bucket}/{storage['catalog_prefix']}/{workspace}.ducklake"
+    ws_catalog_s3 = f"s3://{bucket}/{storage['catalog_prefix']}/{workspace}.duckdb"
     global_catalog_s3 = f"s3://{bucket}/{storage['global_catalog']}"
 
-    ws_catalog_local = os.path.join(catalog_dir, f"{workspace}.ducklake")
-    global_catalog_local = os.path.join(catalog_dir, "catalog.ducklake")
+    ws_catalog_local = os.path.join(catalog_dir, f"{workspace}.duckdb")
+    global_catalog_local = os.path.join(catalog_dir, "catalog.duckdb")
 
     # Merge using DuckDB
     try:
@@ -110,7 +115,6 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
 
     con = duckdb.connect()
     con.execute("INSTALL ducklake; LOAD ducklake;")
-    con.execute("INSTALL sqlite; LOAD sqlite;")
 
     # Configure S3 access via CREATE SECRET so DuckLake internal operations
     # (not just read_parquet) use the correct endpoint and credentials.
@@ -159,7 +163,7 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
             # Use bucket root as DATA_PATH so DuckLake writes files under
             # {schema}/{table}/ without double-nesting the schema prefix.
             con.execute(f"""
-                ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (
+                ATTACH 'ducklake:{ws_catalog_local}' AS ws (
                     DATA_PATH '{data_path}'
                 )
             """)
@@ -186,7 +190,7 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
 
             # Re-attach as read-only for the merge step
             con.execute(f"""
-                ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (READ_ONLY)
+                ATTACH 'ducklake:{ws_catalog_local}' AS ws (READ_ONLY)
             """)
         except duckdb.Error as e:
             print(f"  ERROR: Failed to bootstrap workspace catalog: {e}")
@@ -196,7 +200,7 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
         # Attach existing workspace catalog (read-only)
         try:
             con.execute(f"""
-                ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (READ_ONLY)
+                ATTACH 'ducklake:{ws_catalog_local}' AS ws (READ_ONLY)
             """)
         except duckdb.Error as e:
             print(f"  ERROR: Failed to attach workspace catalog: {e}")
@@ -206,7 +210,7 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
     # Attach global catalog (read-write, create if not exists)
     try:
         con.execute(f"""
-            ATTACH 'ducklake:sqlite:{global_catalog_local}' AS global_cat (
+            ATTACH 'ducklake:{global_catalog_local}' AS global_cat (
                 DATA_PATH '{data_path}'
             )
         """)
