@@ -19,12 +19,13 @@ dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 
 [tool.registry]
 description = "Live worldwide flight positions from the OpenSky Network ADS-B API"
-schedule = "*/15 * * * *"
+schedule = "0 * * * *"
 timeout = 10
 tags = ["aviation", "flights", "ads-b", "opensky", "real-time"]
 schema = "opensky-flights"
 table = "states"
 mode = "append"
+partition_by = "day(snapshot_time), hour(snapshot_time)"
 
 [tool.registry.runner]
 backend = "github"

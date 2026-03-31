@@ -1,11 +1,22 @@
-"""Extract live flight state vectors from the OpenSky Network API.
+"""Extract flight data from the OpenSky Network API.
 
-Uses native DuckDB HTTP + JSON capabilities (httpfs extension) instead of
-external HTTP libraries. Writes GeoParquet with native Parquet geometry
-(GEOPARQUET_VERSION 'BOTH') for DuckLake zero-copy registration.
+Two data streams, each producing a separate GeoParquet file:
 
-Anonymous API: ~5k-15k aircraft per snapshot, 10s rate limit.
-Dedup key: (icao24, snapshot_time) for append mode.
+1. **states** (`/api/states/all`): Real-time aircraft position snapshots.
+   ~10k rows per call. Each aircraft appears once per snapshot_time.
+   Dedup key: (icao24, snapshot_time). No overlap between hourly runs.
+
+2. **flights** (`/api/flights/all?begin=...&end=...`): Completed flights
+   with estimated departure/arrival airports. 2-hour lookback window.
+   Overlaps between consecutive hourly runs, so dedup is essential.
+   Dedup key: (icao24, first_seen). Same flight returned by consecutive
+   calls gets the same (icao24, first_seen) pair.
+
+DuckLake partitioning: day(snapshot_time), hour(snapshot_time) for states.
+DuckLake partitioning: day(last_seen) for flights.
+
+All timestamps converted from Unix epoch seconds via make_timestamp().
+GeoParquet written with GEOPARQUET_VERSION 'BOTH' for DuckLake zero-copy.
 """
 
 import os
@@ -13,40 +24,56 @@ import time
 
 import duckdb
 
-API_URL = "https://opensky-network.org/api/states/all"
+STATES_URL = "https://opensky-network.org/api/states/all"
+FLIGHTS_URL = "https://opensky-network.org/api/flights/all"
 OUT = os.environ.get("OUTPUT_DIR", "output")
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 
 
-def extract_live(db):
-    """Fetch from OpenSky API using DuckDB httpfs + JSON parsing."""
-    # DuckDB reads states as JSON[][] (1-based indexing after unnest)
+def setup(db):
+    """Load required extensions."""
+    db.execute("INSTALL spatial; LOAD spatial;")
+    db.execute("INSTALL httpfs; LOAD httpfs;")
+    db.execute("SET geometry_always_xy = true;")
+
+
+def extract_states(db):
+    """Fetch real-time aircraft positions from /api/states/all.
+
+    The API returns a JSON object with:
+      - "time": Unix epoch seconds (snapshot timestamp)
+      - "states": array of arrays, each with 17 positional fields
+
+    Anonymous access: ~10k aircraft globally, 10s update interval.
+    """
+    print("Fetching live state vectors from OpenSky Network...")
     db.execute(f"""
-        CREATE TABLE raw AS
+        CREATE OR REPLACE TABLE raw_states AS
         WITH api AS (
             SELECT
                 unnest(states) AS sv,
                 "time" AS snapshot_ts
-            FROM read_json_auto('{API_URL}')
+            FROM read_json_auto('{STATES_URL}')
         )
         SELECT
-            CAST(sv[1]  AS VARCHAR) AS icao24,
+            CAST(sv[1]  AS VARCHAR)  AS icao24,
             NULLIF(TRIM(CAST(sv[2] AS VARCHAR)), '') AS callsign,
-            CAST(sv[3]  AS VARCHAR) AS origin_country,
-            CAST(sv[4]  AS BIGINT) AS time_position,
-            CAST(sv[5]  AS BIGINT) AS last_contact,
-            CAST(sv[6]  AS DOUBLE) AS longitude,
-            CAST(sv[7]  AS DOUBLE) AS latitude,
-            CAST(sv[8]  AS DOUBLE) AS baro_altitude,
-            CAST(sv[9]  AS BOOLEAN) AS on_ground,
-            CAST(sv[10] AS DOUBLE) AS velocity,
-            CAST(sv[11] AS DOUBLE) AS true_track,
-            CAST(sv[12] AS DOUBLE) AS vertical_rate,
-            CAST(sv[14] AS DOUBLE) AS geo_altitude,
-            CAST(sv[15] AS VARCHAR) AS squawk,
-            CAST(sv[16] AS BOOLEAN) AS spi,
-            CAST(sv[17] AS INTEGER) AS position_source,
-            snapshot_ts
+            CAST(sv[3]  AS VARCHAR)  AS origin_country,
+            make_timestamp(CAST(sv[4]  AS BIGINT) * 1000000) AS time_position,
+            make_timestamp(CAST(sv[5]  AS BIGINT) * 1000000) AS last_contact,
+            CAST(sv[6]  AS DOUBLE)   AS longitude,
+            CAST(sv[7]  AS DOUBLE)   AS latitude,
+            CAST(sv[8]  AS DOUBLE)   AS baro_altitude,
+            CAST(sv[9]  AS BOOLEAN)  AS on_ground,
+            CAST(sv[10] AS DOUBLE)   AS velocity,
+            CAST(sv[11] AS DOUBLE)   AS true_track,
+            CAST(sv[12] AS DOUBLE)   AS vertical_rate,
+            CAST(sv[14] AS DOUBLE)   AS geo_altitude,
+            CAST(sv[15] AS VARCHAR)  AS squawk,
+            CAST(sv[16] AS BOOLEAN)  AS spi,
+            CAST(sv[17] AS INTEGER)  AS position_source,
+            make_timestamp(snapshot_ts * 1000000) AS snapshot_time,
+            ST_Point(CAST(sv[6] AS DOUBLE), CAST(sv[7] AS DOUBLE)) AS geometry
         FROM api
         WHERE sv[6] IS NOT NULL
           AND sv[7] IS NOT NULL
@@ -54,12 +81,73 @@ def extract_live(db):
           AND CAST(sv[7] AS VARCHAR) != 'null'
     """)
 
+    count = db.execute("SELECT COUNT(*) FROM raw_states").fetchone()[0]
+    snap = db.execute("SELECT MIN(snapshot_time) FROM raw_states").fetchone()[0]
+    print(f"  States: {count} aircraft at {snap}")
+    return count
+
+
+def extract_flights(db):
+    """Fetch completed flights from /api/flights/all (last 2 hours).
+
+    Anonymous access returns recently completed flights with estimated
+    departure/arrival airports. The 2-hour window is the API maximum.
+    Consecutive hourly runs will overlap by ~1 hour, producing duplicates
+    for flights that completed in the overlap window.
+
+    Returns 0 if the endpoint fails (non-critical, states is the primary).
+    """
+    now = int(time.time())
+    begin = now - 7200  # 2 hours ago (API maximum window)
+    url = f"{FLIGHTS_URL}?begin={begin}&end={now}"
+
+    print("Fetching completed flights from OpenSky Network...")
+    try:
+        db.execute(f"""
+            CREATE OR REPLACE TABLE raw_flights AS
+            SELECT
+                icao24,
+                NULLIF(TRIM(callsign), '') AS callsign,
+                make_timestamp(firstSeen * 1000000) AS first_seen,
+                make_timestamp(lastSeen * 1000000) AS last_seen,
+                estDepartureAirport AS departure_airport,
+                estArrivalAirport AS arrival_airport,
+                estDepartureAirportHorizDistance AS departure_horiz_distance,
+                estDepartureAirportVertDistance AS departure_vert_distance,
+                estArrivalAirportHorizDistance AS arrival_horiz_distance,
+                estArrivalAirportVertDistance AS arrival_vert_distance,
+                departureAirportCandidatesCount AS departure_candidates,
+                arrivalAirportCandidatesCount AS arrival_candidates
+            FROM read_json_auto('{url}')
+        """)
+        count = db.execute("SELECT COUNT(*) FROM raw_flights").fetchone()[0]
+        print(f"  Flights: {count} completed flights in last 2h")
+        return count
+    except Exception as e:
+        print(f"  Flights endpoint failed (non-critical): {e}")
+        db.execute("""
+            CREATE OR REPLACE TABLE raw_flights AS
+            SELECT
+                '' AS icao24, '' AS callsign,
+                TIMESTAMP '1970-01-01' AS first_seen,
+                TIMESTAMP '1970-01-01' AS last_seen,
+                '' AS departure_airport, '' AS arrival_airport,
+                0 AS departure_horiz_distance, 0 AS departure_vert_distance,
+                0 AS arrival_horiz_distance, 0 AS arrival_vert_distance,
+                0 AS departure_candidates, 0 AS arrival_candidates
+            WHERE false
+        """)
+        return 0
+
 
 def generate_dry_run(db):
-    """Generate synthetic flight data for PR validation."""
+    """Generate synthetic data for PR validation."""
     snapshot_ts = int(time.time())
+    print("Dry run: generating synthetic flight data")
+
+    # Synthetic states
     db.execute(f"""
-        CREATE TABLE raw AS
+        CREATE OR REPLACE TABLE raw_states AS
         SELECT
             printf('%06x', i) AS icao24,
             'TST' || printf('%04d', i) AS callsign,
@@ -71,8 +159,8 @@ def generate_dry_run(db):
                 WHEN 4 THEN 'Brazil'
                 ELSE 'Australia'
             END AS origin_country,
-            {snapshot_ts}::BIGINT AS time_position,
-            {snapshot_ts}::BIGINT AS last_contact,
+            make_timestamp({snapshot_ts}::BIGINT * 1000000) AS time_position,
+            make_timestamp({snapshot_ts}::BIGINT * 1000000) AS last_contact,
             -180 + random() * 360 AS longitude,
             -90 + random() * 180 AS latitude,
             random() * 13000 AS baro_altitude,
@@ -87,49 +175,47 @@ def generate_dry_run(db):
             END AS squawk,
             false AS spi,
             0 AS position_source,
-            {snapshot_ts}::BIGINT AS snapshot_ts
+            make_timestamp({snapshot_ts}::BIGINT * 1000000) AS snapshot_time,
+            ST_Point(-180 + random() * 360, -90 + random() * 180) AS geometry
         FROM range(2000) t(i)
     """)
 
+    # Synthetic flights
+    db.execute(f"""
+        CREATE OR REPLACE TABLE raw_flights AS
+        SELECT
+            printf('%06x', i) AS icao24,
+            'TST' || printf('%04d', i) AS callsign,
+            make_timestamp(({snapshot_ts} - 3600 + i * 10)::BIGINT * 1000000) AS first_seen,
+            make_timestamp(({snapshot_ts} - 600 + i * 5)::BIGINT * 1000000) AS last_seen,
+            CASE i % 4 WHEN 0 THEN 'KJFK' WHEN 1 THEN 'EGLL'
+                        WHEN 2 THEN 'LFPG' ELSE 'RJTT' END AS departure_airport,
+            CASE i % 4 WHEN 0 THEN 'EGLL' WHEN 1 THEN 'KJFK'
+                        WHEN 2 THEN 'EDDF' ELSE 'KLAX' END AS arrival_airport,
+            (random() * 5000)::INT AS departure_horiz_distance,
+            (random() * 500)::INT AS departure_vert_distance,
+            (random() * 5000)::INT AS arrival_horiz_distance,
+            (random() * 500)::INT AS arrival_vert_distance,
+            (random() * 10)::INT AS departure_candidates,
+            (random() * 10)::INT AS arrival_candidates
+        FROM range(200) t(i)
+    """)
 
-def write_geoparquet(db):
-    """Write a single GeoParquet file per run, Hilbert-sorted.
+    states_n = db.execute("SELECT COUNT(*) FROM raw_states").fetchone()[0]
+    flights_n = db.execute("SELECT COUNT(*) FROM raw_flights").fetchone()[0]
+    print(f"  Dry run states: {states_n}, flights: {flights_n}")
+    return states_n, flights_n
 
-    DuckLake manages file catalog and compaction, so we write one flat file
-    per snapshot with snapshot_date as a regular column (not Hive-partitioned).
 
-    Uses GEOPARQUET_VERSION 'BOTH' to write native Parquet geometry format
-    (required by DuckLake's ducklake_add_data_files for zero-copy registration)
-    plus GeoParquet v1 metadata for backwards compatibility.
-    """
+def write_states(db):
+    """Write states GeoParquet, Hilbert-sorted for spatial query performance."""
     os.makedirs(OUT, exist_ok=True)
-
-    count = db.execute("SELECT COUNT(*) FROM raw").fetchone()[0]
+    count = db.execute("SELECT COUNT(*) FROM raw_states").fetchone()[0]
 
     db.execute(f"""
         COPY (
-            SELECT
-                icao24,
-                callsign,
-                origin_country,
-                epoch_ms(time_position * 1000)::TIMESTAMP AS time_position,
-                epoch_ms(last_contact * 1000)::TIMESTAMP AS last_contact,
-                longitude,
-                latitude,
-                baro_altitude,
-                on_ground,
-                velocity,
-                true_track,
-                vertical_rate,
-                geo_altitude,
-                squawk,
-                spi,
-                position_source,
-                epoch_ms(snapshot_ts * 1000)::TIMESTAMP AS snapshot_time,
-                CAST(epoch_ms(snapshot_ts * 1000) AS DATE) AS snapshot_date,
-                ST_Point(longitude, latitude) AS geometry
-            FROM raw
-            ORDER BY ST_Hilbert(ST_Point(longitude, latitude))
+            SELECT * FROM raw_states
+            ORDER BY ST_Hilbert(geometry)
         ) TO '{OUT}/states.parquet' (
             FORMAT PARQUET,
             COMPRESSION ZSTD,
@@ -138,27 +224,48 @@ def write_geoparquet(db):
             GEOPARQUET_VERSION 'BOTH'
         )
     """)
+    print(f"  Wrote {OUT}/states.parquet ({count} rows)")
+    return count
 
+
+def write_flights(db):
+    """Write flights Parquet (no geometry column, sorted by last_seen)."""
+    count = db.execute("SELECT COUNT(*) FROM raw_flights").fetchone()[0]
+    if count == 0:
+        print("  No flights to write, skipping")
+        return 0
+
+    db.execute(f"""
+        COPY (
+            SELECT * FROM raw_flights
+            ORDER BY last_seen, icao24
+        ) TO '{OUT}/flights.parquet' (
+            FORMAT PARQUET,
+            COMPRESSION ZSTD,
+            COMPRESSION_LEVEL 15,
+            ROW_GROUP_SIZE 100000
+        )
+    """)
+    print(f"  Wrote {OUT}/flights.parquet ({count} rows)")
     return count
 
 
 def main():
     db = duckdb.connect()
-    db.execute("INSTALL spatial; LOAD spatial;")
-    db.execute("INSTALL httpfs; LOAD httpfs;")
+    setup(db)
 
     if DRY_RUN:
-        print("Dry run: generating synthetic flight data")
         generate_dry_run(db)
     else:
-        print("Fetching live flight data from OpenSky Network...")
-        extract_live(db)
+        extract_states(db)
+        extract_flights(db)
 
-    count = write_geoparquet(db)
+    states_n = write_states(db)
+    flights_n = write_flights(db)
     db.close()
 
     label = "Dry run" if DRY_RUN else "Extract"
-    print(f"{label}: wrote {OUT}/states.parquet ({count} rows)")
+    print(f"{label} complete: {states_n} states, {flights_n} flights")
 
 
 if __name__ == "__main__":
