@@ -1,0 +1,34 @@
+# Registry Platform Configuration
+# ================================
+# This is the single source of truth for backend definitions and storage config.
+# Forks: edit this file and set the corresponding repository secrets.
+# All secret VALUES live in GitHub repo settings, not here. This file only
+# declares which secret NAMES the workflows and scripts expect.
+
+[storage]
+# Secret names (set actual values in GitHub repo settings > Secrets)
+endpoint_url_secret = "S3_ENDPOINT_URL"       # e.g. https://fsn1.your-objectstorage.com
+bucket_secret = "S3_BUCKET"                   # e.g. registry
+region_secret = "S3_REGION"                   # e.g. fsn1 (optional, depends on provider)
+write_key_id_secret = "S3_WRITE_KEY_ID"       # S3 access key with write permission
+write_secret_key_secret = "S3_WRITE_SECRET"   # S3 secret key
+
+# S3 layout (relative to bucket root)
+catalog_prefix = ".catalogs"                  # where workspace catalogs live
+global_catalog = "catalog.ducklake"           # global catalog filename at bucket root
+staging_prefix = "pr"                         # PR staging data: pr/{pr_number}/{schema}/
+
+[backends.github]
+workflow = "extract-github.yml"
+flavors = ["ubuntu-latest"]
+# No extra secrets needed beyond S3
+
+[backends.hetzner]
+workflow = "extract-hetzner.yml"
+flavors = ["cax11", "cax21", "cax31", "cax41"]
+# Extra secrets needed: HCLOUD_TOKEN, RUNNER_PAT
+
+[backends.huggingface]
+workflow = "extract-huggingface.yml"
+flavors = ["cpu-basic", "cpu-upgrade", "t4-small", "t4-medium", "l4x1", "a10g-small", "a10g-large", "a10g-largex2", "a100-large"]
+# Extra secrets needed: HF_TOKEN
