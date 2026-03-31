@@ -181,6 +181,13 @@ s3://registry/
     osm/
         buildings/
             ducklake-789xyz.parquet
+
+    pr/                                # PR staging data (ephemeral, auto-cleaned)
+        42/                            # PR number
+            weather/
+                observations/
+                    ducklake-xyz789.parquet
+        42.ducklake                    # PR-scoped workspace catalog (optional)
 ```
 
 **Rule: `schema` in pixi.toml = S3 prefix = workspace write boundary.** Each workspace can only write to its own prefix.
@@ -397,6 +404,23 @@ Layer 3 pulls the global catalog from S3 at runtime to check for conflicts. No c
 - `data` must be recognized SPDX (CC-BY-4.0, CC0-1.0, ODbL-1.0, etc.)
 - `mixed = true` requires per-source `sources` array
 - Restrictive licenses (CC-BY-NC) trigger a warning label, not a block
+
+### PR Staging Extraction
+
+After the 4-layer validation passes, a maintainer can trigger a **full extraction** against the PR branch to verify the real pipeline end-to-end before merging. This uploads data to a staging S3 prefix, never to production.
+
+**Trigger:** Maintainer comments `/run-extract` on the PR (or `/run-extract weather` for a specific workspace). Only users with write/maintain/admin access can trigger.
+
+**Flow:**
+1. `pr-extract.yml` checks permissions, parses workspace names from the comment (or auto-detects from PR diff)
+2. Checks out the PR branch, runs `pixi run -w {name} pipeline` (full extraction, not dry-run)
+3. Uploads Parquet output to `s3://bucket/pr/{pr_number}/{schema}/` (staging prefix)
+4. Runs output validation (row counts, nulls, geometry)
+5. Posts a PR comment with DuckDB query examples to inspect the staged data
+
+**Cleanup:** `pr-cleanup.yml` triggers on PR close (merge or abandon), deletes all data under `s3://bucket/pr/{pr_number}/`. Fully automatic.
+
+**Why PR number, not branch name:** Branch names can contain `/` and special characters that break S3 paths. PR numbers are unique, short, and stable.
 
 ---
 
@@ -714,12 +738,18 @@ jobs:
 - The workspace needs a `build-image` workflow to build and push the Docker image on code changes
 - Validation may run inside the container (post-extract step) or as a separate HF job
 
-**HF Job flavors:**
+**HF Job flavors (huggingface_hub v1.8.0+):**
 
 | Flavor | GPU | VRAM | CPU | RAM | Use case |
 |--------|-----|------|-----|-----|----------|
-| `t4-medium` | T4 | 16 GB | 4 | 15 GB | Small inference |
+| `cpu-basic` | none | -- | 2 | 16 GB | Lightweight CPU tasks |
+| `cpu-upgrade` | none | -- | 8 | 32 GB | Medium CPU tasks |
+| `t4-small` | T4 | 16 GB | 4 | 15 GB | Small inference |
+| `t4-medium` | T4 | 16 GB | 8 | 30 GB | Medium inference |
+| `l4x1` | L4 | 24 GB | 8 | 30 GB | Modern GPU inference |
+| `a10g-small` | A10G | 24 GB | 4 | 15 GB | Small A10G workloads |
 | `a10g-large` | A10G | 24 GB | 12 | 46 GB | Weather models (default) |
+| `a10g-largex2` | 2x A10G | 48 GB | 24 | 92 GB | Multi-GPU inference |
 | `a100-large` | A100 | 80 GB | 12 | 142 GB | Large models, training |
 
 **Event-driven pattern (from walkthru-weather-index):**
@@ -942,28 +972,85 @@ ai-data-registry/
             package.json
 
     .github/
+        registry.config.toml         # Central config: backends, flavors, storage secret names
         workflows/
             scheduler.yml            # Cron watcher, reads [tool.registry], dispatches per backend
             extract-github.yml       # Backend: free GitHub runner (ubuntu-latest)
-            extract-hetzner.yml      # Backend: ephemeral Hetzner (create → run → delete)
+            extract-hetzner.yml      # Backend: ephemeral Hetzner (create -> run -> delete)
             extract-huggingface.yml  # Backend: HF Jobs API (GPU, Docker image)
             build-image.yml          # Build + push Docker images for HF workspaces
             merge-catalog.yml        # Serial catalog merge (concurrency: 1)
             pr-validate.yml          # 4-layer PR validation (dry-run on free runner)
+            pr-extract.yml           # Maintainer-triggered full extraction on PR (staging)
+            pr-cleanup.yml           # Auto-cleanup staging data on PR close/merge
             maintenance.yml          # Weekly workspace compaction
-        scripts/
-            find-due.py              # Schedule evaluation + backend routing + validation
-            merge-catalog.py         # File list diff + add_data_files
-            validate-manifest.py     # pixi.toml schema + task contract + supported backend check
-            check-collisions.py      # schema.table uniqueness
-            check-catalog.py         # Live catalog queries
-            validate-output.py       # Parquet quality checks
+        scripts/                     # All scripts use PEP 723 inline deps, run via `uv run`
+            registry_config.py       # Shared config module (stdlib only, no external deps)
+            find_due.py              # Schedule evaluation + backend routing + validation
+            merge_catalog.py         # File list diff + add_data_files
+            validate_manifest.py     # pixi.toml schema + task contract + supported backend check
+            check_collisions.py      # schema.table uniqueness
+            check_catalog.py         # Live catalog queries
+            validate_output.py       # Parquet quality checks
+            submit_hf_job.py         # HF Jobs submission + polling
+            maintenance.py           # DuckLake CHECKPOINT on workspace catalogs
 
     .claude/                         # AI rules, skills, agents (existing)
     research/                        # This file
 ```
 
 No catalogs in git. No state files in git. Everything ephemeral is on S3 or workflow artifacts.
+
+---
+
+## Registry Configuration (`.github/registry.config.toml`)
+
+Central, vendor-agnostic config file. This is the single source of truth for backend definitions and storage secret names. Forks customize this file + set the corresponding GitHub repository secrets.
+
+```toml
+[storage]
+endpoint_url_secret = "S3_ENDPOINT_URL"    # Secret name, not value
+bucket_secret = "S3_BUCKET"
+catalog_prefix = ".catalogs"
+global_catalog = "catalog.ducklake"
+staging_prefix = "pr"                      # PR staging: pr/{pr_number}/{schema}/
+
+[backends.github]
+workflow = "extract-github.yml"
+flavors = ["ubuntu-latest"]
+
+[backends.hetzner]
+workflow = "extract-hetzner.yml"
+flavors = ["cax11", "cax21", "cax31", "cax41"]
+
+[backends.huggingface]
+workflow = "extract-huggingface.yml"
+flavors = ["cpu-basic", "cpu-upgrade", "t4-small", "t4-medium", "l4x1",
+           "a10g-small", "a10g-large", "a10g-largex2", "a100-large"]
+```
+
+All Python scripts read this config via `registry_config.py` (shared module, stdlib only). Backend validation, workspace discovery, and storage paths all resolve from this single file.
+
+---
+
+## CI Script Tooling
+
+Helper scripts in `.github/scripts/` use **uv** with **PEP 723 inline script metadata**, not pixi. This keeps CI-only dependencies (croniter, duckdb Python API, huggingface-hub) completely separate from the shared developer tools in root `pixi.toml`.
+
+```python
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "croniter>=6.0",
+# ]
+# ///
+```
+
+Workflows install uv via `astral-sh/setup-uv@v7`, then call scripts with `uv run .github/scripts/script.py`. uv reads the inline metadata, creates a cached environment with the declared dependencies, and runs the script. No requirements.txt, no separate pixi environment, no lock file needed.
+
+**Two runtimes, clear separation:**
+- **pixi** runs workspace pipelines and shared tools (`pixi run -w {name} pipeline`, `pixi run s5cmd`, `pixi run gpio`)
+- **uv** runs CI helper scripts (`uv run .github/scripts/validate_manifest.py`)
 
 ---
 
@@ -1022,6 +1109,11 @@ Issues discovered during architecture research that affect this design:
 | Task contract | `pipeline` entry point chains setup → extract → validate via `depends-on` | Single command for runners. Pixi stops on failure. Language-agnostic. Locally testable. |
 | Runner backends | Multi-backend via `[tool.registry.runner]`: github, hetzner, huggingface. Maintainer-managed, contributor picks from supported list. | Each workspace picks compute that fits its needs. New backends added by maintainer only. PR validation enforces supported list. |
 | Runner entry point | `pixi run -w {name} pipeline` (production), `pixi run -w {name} dry-run` (PR validation) | One command per mode. Workflow doesn't need to know task internals. Backend-agnostic contract. |
+| CI script execution | `uv run` with PEP 723 inline deps (`# /// script` blocks) | CI-only deps (croniter, duckdb, huggingface-hub) stay separate from shared pixi tools. No lock file, no extra environment. |
+| Registry config | Central `.github/registry.config.toml` | Single source of truth for backends, flavors, storage secret names. Forks edit this file. |
+| PR staging isolation | Separate S3 prefix (`pr/{pr_number}/`) with auto-cleanup on PR close | Keeps test data separate from production. Maintainer can query staged data before approving merge. |
+| Workspace secrets | `WS_{name}_API_KEY` pattern via GitHub Actions `secrets[format()]` | Simple, scoped per workspace, no custom secret management needed. |
+| License strictness | Restrictive licenses (CC-BY-NC) trigger warning, not block | Allows open data with commercial restrictions, flagged for reviewer attention. |
 
 ## Open Questions
 
@@ -1029,11 +1121,7 @@ Issues discovered during architecture research that affect this design:
 
 2. **Cross-workspace dependencies**: Can workspace B depend on workspace A's output? Would need `depends_on = ["weather"]` in `[tool.registry]` and DAG resolution in the scheduler.
 
-3. **Secrets per workspace**: API keys needed by some workspaces. Options: GitHub environment secrets scoped per workspace (`WS_{name}_API_KEY`), or encrypted secrets catalog for open-source contributors (DecapCMS + AES-256-GCM pattern from data-research). Single shared S3 credential with application-level prefix isolation (Hetzner doesn't support per-prefix IAM).
-
-4. **License strictness**: Restrictive data licenses (CC-BY-NC) trigger warning or hard block? Leaning warning-only.
-
-5. **Global catalog rebuild**: When the global catalog gets bloated (issue #572), what's the rebuild procedure? Likely: create fresh catalog, iterate all workspace catalogs, re-register all files.
+3. **Global catalog rebuild**: When the global catalog gets bloated (issue #572), what's the rebuild procedure? Likely: create fresh catalog, iterate all workspace catalogs, re-register all files.
 
 6. **Iceberg as derived output**: DuckDB 1.4.0+ can read AND write Iceberg tables (requires REST catalog like Lakekeeper). Should we generate Iceberg metadata as a post-merge step for multi-engine access (Spark, Trino, Snowflake)? Options: (a) static Iceberg metadata files on S3 (Portolan pattern, no server), (b) Lakekeeper container for full DuckDB read+write Iceberg, (c) defer until external consumers need access. DuckLake vs Iceberg research completed 2026-03-30.
 
