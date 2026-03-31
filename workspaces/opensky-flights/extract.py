@@ -1,7 +1,8 @@
 """Extract live flight state vectors from the OpenSky Network API.
 
 Uses native DuckDB HTTP + JSON capabilities (httpfs extension) instead of
-external HTTP libraries. Writes Hive-partitioned GeoParquet by date.
+external HTTP libraries. Writes GeoParquet with native Parquet geometry
+(GEOPARQUET_VERSION 'BOTH') for DuckLake zero-copy registration.
 
 Anonymous API: ~5k-15k aircraft per snapshot, 10s rate limit.
 Dedup key: (icao24, snapshot_time) for append mode.
@@ -96,8 +97,10 @@ def write_geoparquet(db):
 
     DuckLake manages file catalog and compaction, so we write one flat file
     per snapshot with snapshot_date as a regular column (not Hive-partitioned).
-    This avoids losing the partition column when DuckLake registers files
-    via ducklake_add_data_files().
+
+    Uses GEOPARQUET_VERSION 'BOTH' to write native Parquet geometry format
+    (required by DuckLake's ducklake_add_data_files for zero-copy registration)
+    plus GeoParquet v1 metadata for backwards compatibility.
     """
     os.makedirs(OUT, exist_ok=True)
 
@@ -131,7 +134,8 @@ def write_geoparquet(db):
             FORMAT PARQUET,
             COMPRESSION ZSTD,
             COMPRESSION_LEVEL 15,
-            ROW_GROUP_SIZE 100000
+            ROW_GROUP_SIZE 100000,
+            GEOPARQUET_VERSION 'BOTH'
         )
     """)
 

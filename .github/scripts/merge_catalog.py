@@ -156,12 +156,11 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
     data_path = f"s3://{bucket}/"
 
     if ws_bootstrap:
-        # First run: create workspace catalog by inserting data from S3 Parquet files.
-        # We INSERT INTO instead of ducklake_add_data_files because DuckLake's internal
-        # S3 context may not inherit connection-level s3_endpoint/s3_url_style settings.
+        # First run: zero-copy bootstrap. Create an empty table matching the
+        # Parquet schema, then register existing S3 files via ducklake_add_data_files().
+        # No data is copied. CREATE SECRET (above) ensures DuckLake's internal
+        # S3 operations use the correct endpoint and credentials.
         try:
-            # Use bucket root as DATA_PATH so DuckLake writes files under
-            # {schema}/{table}/ without double-nesting the schema prefix.
             con.execute(f"""
                 ATTACH 'ducklake:{ws_catalog_local}' AS ws (
                     DATA_PATH '{data_path}'
@@ -169,18 +168,37 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
             """)
             con.execute(f'CREATE SCHEMA IF NOT EXISTS ws."{schema}"')
 
-            # Create table and insert data from S3 Parquet files in one step
+            # Discover Parquet files and infer schema from the first one
             parquet_glob = f"{ws_data_prefix}*.parquet"
+            files = con.execute(f"""
+                SELECT file FROM glob('{parquet_glob}')
+            """).fetchall()
+
+            if not files:
+                print(f"  ERROR: No Parquet files found at {parquet_glob}")
+                con.close()
+                return False
+
+            # Create empty table with schema from the first Parquet file
             con.execute(f"""
                 CREATE TABLE ws."{schema}"."{table}" AS
-                SELECT * FROM read_parquet('{parquet_glob}')
+                SELECT * FROM read_parquet('{files[0][0]}') LIMIT 0
             """)
 
+            # Zero-copy: register each existing file (metadata only, no data duplication)
+            registered = 0
+            for (file_path,) in files:
+                con.execute(f"""
+                    CALL ducklake_add_data_files('ws', '{table}', '{file_path}',
+                        schema => '{schema}',
+                        allow_missing => true,
+                        ignore_extra_columns => true
+                    )
+                """)
+                registered += 1
+
             row_count = con.execute(f'SELECT COUNT(*) FROM ws."{schema}"."{table}"').fetchone()[0]
-            file_count = con.execute(f"""
-                SELECT COUNT(*) FROM ducklake_list_files('ws', '{table}', schema => '{schema}')
-            """).fetchone()[0]
-            print(f"  Bootstrapped workspace catalog: {row_count} rows, {file_count} file(s).")
+            print(f"  Bootstrapped workspace catalog (zero-copy): {row_count} rows, {registered} file(s).")
 
             # Upload the new workspace catalog to S3
             con.execute("DETACH ws")
