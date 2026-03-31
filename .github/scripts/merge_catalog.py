@@ -150,7 +150,9 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
     data_path = f"s3://{bucket}/"
 
     if ws_bootstrap:
-        # First run: create workspace catalog from Parquet files on S3
+        # First run: create workspace catalog by inserting data from S3 Parquet files.
+        # We INSERT INTO instead of ducklake_add_data_files because DuckLake's internal
+        # S3 context may not inherit connection-level s3_endpoint/s3_url_style settings.
         try:
             con.execute(f"""
                 ATTACH 'ducklake:sqlite:{ws_catalog_local}' AS ws (
@@ -159,40 +161,18 @@ def merge_workspace(workspace: str, catalog_dir: str) -> bool:
             """)
             con.execute(f'CREATE SCHEMA IF NOT EXISTS ws."{schema}"')
 
-            # Discover Parquet files on S3 and infer schema
+            # Create table and insert data from S3 Parquet files in one step
             parquet_glob = f"{ws_data_prefix}*.parquet"
-            cols = con.execute(f"""
-                SELECT column_name, column_type
-                FROM (DESCRIBE SELECT * FROM read_parquet('{parquet_glob}'))
-            """).fetchall()
+            con.execute(f"""
+                CREATE TABLE ws."{schema}"."{table}" AS
+                SELECT * FROM read_parquet('{parquet_glob}')
+            """)
 
-            if not cols:
-                print(f"  ERROR: No Parquet files found at {parquet_glob}")
-                con.close()
-                return False
-
-            col_defs = ", ".join(f'"{name}" {dtype}' for name, dtype in cols)
-            con.execute(f'CREATE TABLE ws."{schema}"."{table}" ({col_defs})')
-
-            # List actual Parquet files and register them
-            files = con.execute(f"""
-                SELECT file FROM glob('{parquet_glob}')
-            """).fetchall()
-            file_count = 0
-            for (f,) in files:
-                try:
-                    con.execute(f"""
-                        CALL ducklake_add_data_files('ws', '{table}', '{f}',
-                            schema => '{schema}',
-                            allow_missing => true,
-                            ignore_extra_columns => true
-                        )
-                    """)
-                    file_count += 1
-                except duckdb.Error as e:
-                    print(f"  WARNING: Failed to register {f} in workspace catalog: {e}")
-
-            print(f"  Bootstrapped workspace catalog with {file_count} file(s).")
+            row_count = con.execute(f'SELECT COUNT(*) FROM ws."{schema}"."{table}"').fetchone()[0]
+            file_count = con.execute(f"""
+                SELECT COUNT(*) FROM ducklake_list_files('ws', '{table}', schema => '{schema}')
+            """).fetchone()[0]
+            print(f"  Bootstrapped workspace catalog: {row_count} rows, {file_count} file(s).")
 
             # Upload the new workspace catalog to S3
             con.execute("DETACH ws")
