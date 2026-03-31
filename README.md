@@ -176,6 +176,27 @@ After validation passes, a maintainer can trigger a full extraction against the 
 
 This uploads data to `s3://bucket/pr/{pr_number}/{schema}/` (staging prefix, never production). A PR comment is posted with DuckDB query examples to inspect the staged data. Staging data is auto-cleaned when the PR is closed or merged.
 
+**Important:** `/run-extract` runs from `main`, not the PR branch. Workflow changes must be merged to `main` before they take effect.
+
+### Manual Workflow Triggers
+
+All workflows can be triggered manually via the GitHub CLI:
+
+```bash
+# Run full extraction for a workspace
+gh workflow run extract-github.yml --field workspace=my-pipeline
+
+# Run PR staging extraction
+gh workflow run pr-extract.yml --field pr_number=1 --field workspace=my-pipeline
+
+# Clean up staging data for a PR
+gh workflow run pr-cleanup.yml --field pr_number=1
+
+# Debug a failed run
+gh run list --workflow "PR Validation" --limit 5
+gh run view <run-id> --log-failed
+```
+
 ## Fork Setup (Maintainer)
 
 ### 1. Configure storage

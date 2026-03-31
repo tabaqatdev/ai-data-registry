@@ -236,6 +236,28 @@ The **duckdb** skill documents all ArcGIS macros in [arcgis.md](/.claude/skills/
 | Build ArcGIS ingest pipeline | **pipeline-orchestrator** agent | Routes to DuckDB macros or GDAL as needed |
 | Profile ArcGIS dataset | **data-explorer** agent | Uses arcgis macros for FeatureServer profiling |
 
+## CI/Workflow Gotchas
+- **`issue_comment` workflows run from `main`, not the PR branch.** The `/run-extract` command triggers `pr-extract.yml` via `issue_comment`, which always checks out the workflow file from `main`. If you change a workflow file, you must merge it to `main` before `/run-extract` will use the updated version.
+- **PR cleanup can race with pr-extract.** When a PR is merged, `pr-cleanup.yml` runs immediately. If `/run-extract` uploaded staging data after the merge, use `gh workflow run pr-cleanup.yml --field pr_number=<N>` to clean up manually.
+- **SQL identifiers with hyphens need double-quoting.** Schema names like `test-minimal` must be quoted as `"test-minimal"` in DuckDB SQL. Without quotes, DuckDB parses `test-minimal` as `test` minus `minimal`.
+
+### Debugging CI Failures
+```bash
+# List recent runs for a workflow
+gh run list --workflow "PR Validation" --limit 5
+
+# Watch a run in real-time
+gh run watch <run-id> --exit-status
+
+# View only the failed job logs
+gh run view <run-id> --log-failed
+
+# Manually trigger workflows
+gh workflow run pr-extract.yml --field pr_number=1 --field workspace=my-workspace
+gh workflow run pr-cleanup.yml --field pr_number=1
+gh workflow run extract-github.yml --field workspace=my-workspace
+```
+
 ## Watch Out For
 - Run **env-check** skill after setup or when things break -- it validates everything
 - Always run `pixi install` after pulling to sync the environment
