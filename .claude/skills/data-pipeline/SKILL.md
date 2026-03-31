@@ -16,13 +16,25 @@ All tools via pixi: `pixi run duckdb`, `pixi run gdal`, `pixi run gpio`, `pixi r
 4. **GeoParquet** — preferred intermediate format between steps
 
 ## Pipeline as pixi tasks
+
+For data registry workspaces, follow the workspace contract. See `workspaces/test-minimal/` for a working reference.
+
 ```toml
-[tasks.extract]
+[tasks]
+extract = "python extract.py"
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
+```
+
+For standalone multi-tool pipelines (not registry workspaces):
+```toml
+[tasks.convert]
 cmd = "pixi run gdal vector convert data/raw/input.shp data/interim/input.parquet"
 
 [tasks.transform]
 cmd = "pixi run duckdb -c \"COPY (SELECT * FROM read_parquet('data/interim/input.parquet') WHERE area > 10) TO 'data/interim/filtered.parquet' (FORMAT PARQUET);\""
-depends-on = ["extract"]
+depends-on = ["convert"]
 
 [tasks.optimize]
 cmd = "pixi run gpio sort hilbert data/interim/filtered.parquet data/processed/output.parquet"
@@ -33,12 +45,12 @@ cmd = "pixi run gpio check all data/processed/output.parquet"
 depends-on = ["optimize"]
 
 [tasks.pipeline]
-depends-on = ["extract", "transform", "optimize", "validate"]
+depends-on = ["convert", "transform", "optimize", "validate"]
 ```
 
 ## Guidelines
-- Source files in `data/raw/`, intermediates in `data/interim/`, outputs in `data/processed/`
-- Name tasks as `<pipeline>-<step>`
+- Registry workspaces write to `$OUTPUT_DIR/` (defaults to `output/` locally, CI overrides). Do NOT hardcode `OUTPUT_DIR` in task `env`.
+- Standalone pipelines: source in `data/raw/`, intermediates in `data/interim/`, outputs in `data/processed/`
 - Always add validation step at end
 - Use `depends-on` for DAG ordering
 - Use `"""` multi-line TOML for long commands

@@ -250,10 +250,12 @@ requests = ">=2.31"
 setup = "python scripts/setup.py"
 
 # extract: core pipeline, writes Parquet to $OUTPUT_DIR
-extract = { cmd = "python extract.py", depends-on = ["setup"], env = { OUTPUT_DIR = "output" } }
+# IMPORTANT: Do NOT hardcode OUTPUT_DIR in task env. CI passes its own value.
+# The extract script defaults to "output/" when $OUTPUT_DIR is not set.
+extract = "python extract.py"
 
 # validate: quality checks on extracted output
-validate = { cmd = "python validate.py", depends-on = ["extract"] }
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
 
 # --- Entry point (what the runner calls) ---
 # pipeline: single entry point that chains the full lifecycle
@@ -262,7 +264,7 @@ pipeline = { depends-on = ["setup", "extract", "validate"] }
 
 # --- Optional tasks ---
 # dry-run: PR validation mode (sample output, no full extraction)
-dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1", OUTPUT_DIR = "output" } }
+dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 ```
 
 ### Task Lifecycle
@@ -285,7 +287,7 @@ setup ──→ extract ──→ validate
 
 **Key pixi features used:**
 - `depends-on`: chains tasks, stops on failure
-- `env`: passes `OUTPUT_DIR`, `DRY_RUN` to tasks without hardcoding paths
+- `env`: passes `DRY_RUN` to tasks. Do NOT hardcode `OUTPUT_DIR` in task env (CI overrides it)
 - `args`: optional, for parameterized tasks (e.g., `pixi run extract --date 2026-03-30`)
 - `inputs/outputs`: optional, enables caching (skip extract if source unchanged)
 
@@ -295,13 +297,11 @@ setup ──→ extract ──→ validate
 cmd = "python extract.py --date {{ date }}"
 args = [{ arg = "date", default = "today" }]
 depends-on = ["setup"]
-env = { OUTPUT_DIR = "output" }
 
 # Example: task with caching (skip if input unchanged)
 [tasks.extract]
 cmd = "python extract.py"
 depends-on = ["setup"]
-env = { OUTPUT_DIR = "output" }
 inputs = ["extract.py", "config/*.yaml"]
 outputs = ["output/*.parquet"]
 ```
@@ -492,7 +492,7 @@ flavor = "cax11"              # Must be an allowed flavor for this backend
 |---------|-----------|------------------------|------|-------|------|-------------|
 | **GitHub Free** | `github` | `ubuntu-latest` | No | Yes (setup-pixi) | $0 | Lightweight: CSV/JSON downloads, API calls, small transforms |
 | **Hetzner Cloud** | `hetzner` | `cax11`, `cax21`, `cax31`, `cax41` | No | Yes (setup-pixi) | ~0.006 EUR/min | Medium: spatial processing, large downloads, moderate compute |
-| **Hugging Face Jobs** | `huggingface` | `t4-medium`, `a10g-large`, `a100-large` | Yes | No (Docker) | Pay-per-use | GPU: ML inference, weather models, embeddings |
+| **Hugging Face Jobs** | `huggingface` | `cpu-basic`, `cpu-upgrade`, `t4-small`, `t4-medium`, `l4x1`, `a10g-small`, `a10g-large`, `a10g-largex2`, `a100-large` | Yes (except cpu-*) | No (Docker) | Pay-per-use | GPU/CPU: ML inference, weather models, embeddings |
 
 New backends (e.g., Verda bare-metal, AWS Batch) are added by the maintainer when needed, not by contributors. To request a new backend or a heavy one-shot job, open an issue.
 
@@ -505,7 +505,7 @@ The scheduler reads `[tool.registry.runner]` and dispatches to the corresponding
 SUPPORTED_BACKENDS = {
     "github":      {"workflow": "extract-github.yml",      "flavors": ["ubuntu-latest"]},
     "hetzner":     {"workflow": "extract-hetzner.yml",     "flavors": ["cax11", "cax21", "cax31", "cax41"]},
-    "huggingface": {"workflow": "extract-huggingface.yml", "flavors": ["t4-medium", "a10g-large", "a100-large"]},
+    "huggingface": {"workflow": "extract-huggingface.yml", "flavors": ["cpu-basic", "cpu-upgrade", "t4-small", "t4-medium", "l4x1", "a10g-small", "a10g-large", "a10g-largex2", "a100-large"]},
 }
 
 def dispatch_workspace(ws_name, registry_config):

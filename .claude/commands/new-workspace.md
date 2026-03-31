@@ -82,46 +82,49 @@ unique_cols = ["<id_col>"]
 schema_match = true
 ```
 
-8. **Generate required tasks** based on language:
+8. **Delete the workspace-level pixi.lock** (root lock covers all):
+```bash
+rm workspaces/$0/pixi.lock
+```
+
+9. **Generate required tasks** based on language.
+
+**IMPORTANT:** Do NOT hardcode `OUTPUT_DIR` in task `env`. CI passes its own `$OUTPUT_DIR` via the shell environment. Hardcoding it in pixi task `env` would override the CI value. The extract script should default to `output/` when `$OUTPUT_DIR` is not set.
 
 For Python workspaces:
 ```toml
 [tasks]
-setup = "python scripts/setup.py"
-extract = { cmd = "python scripts/extract.py", depends-on = ["setup"], env = { OUTPUT_DIR = "output" } }
-validate = { cmd = "python scripts/validate.py", depends-on = ["extract"] }
-pipeline = { depends-on = ["setup", "extract", "validate"] }
-dry-run = { cmd = "python scripts/extract.py", env = { DRY_RUN = "1", OUTPUT_DIR = "output" } }
+extract = "python extract.py"
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 ```
 
 For Node workspaces:
 ```toml
 [tasks]
-setup = "node scripts/setup.js"
-extract = { cmd = "node scripts/extract.js", depends-on = ["setup"], env = { OUTPUT_DIR = "output" } }
-validate = { cmd = "node scripts/validate.js", depends-on = ["extract"] }
-pipeline = { depends-on = ["setup", "extract", "validate"] }
-dry-run = { cmd = "node scripts/extract.js", env = { DRY_RUN = "1", OUTPUT_DIR = "output" } }
+extract = "node extract.js"
+validate = { cmd = "node validate_local.js", depends-on = ["extract"] }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "node extract.js", env = { DRY_RUN = "1" } }
 ```
 
 For Go workspaces:
 ```toml
 [tasks]
-setup = "go run ./cmd/setup"
-extract = { cmd = "go run ./cmd/extract", depends-on = ["setup"], env = { OUTPUT_DIR = "output" } }
+extract = "go run ./cmd/extract"
 validate = { cmd = "go run ./cmd/validate", depends-on = ["extract"] }
-pipeline = { depends-on = ["setup", "extract", "validate"] }
-dry-run = { cmd = "go run ./cmd/extract", env = { DRY_RUN = "1", OUTPUT_DIR = "output" } }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "go run ./cmd/extract", env = { DRY_RUN = "1" } }
 ```
 
-9. **Create scaffold files** (scripts directory + starter scripts):
-   - `scripts/setup.py` (or .js/.go) - placeholder with setup logic
-   - `scripts/extract.py` - placeholder that reads `$OUTPUT_DIR` and `$DRY_RUN`
-   - `scripts/validate.py` - placeholder that runs gpio checks
-   - `.gitignore` with `output/` and `.pixi/*` / `!.pixi/config.toml`
+10. **Create scaffold files** based on language. Use `workspaces/test-minimal/` as a reference:
+   - `extract.py` (or .js/.go) - reads `$OUTPUT_DIR` (defaults to `output/`), reads `$DRY_RUN`, writes Parquet
+   - `validate_local.py` - validates extracted output locally (row count, basic checks)
+   - No `.gitignore` needed (root `.gitignore` covers `**/output/` and workspace `pixi.lock`)
 
-10. **Show the final pixi.toml for review** and verify:
-    - All 5 required tasks present (setup, extract, validate, pipeline, dry-run)
+11. **Show the final pixi.toml for review** and verify:
+    - All 4 required tasks present (extract, validate, pipeline, dry-run)
     - `[tool.registry]` complete with runner, license, checks
     - Schema name unique (check other workspaces)
 

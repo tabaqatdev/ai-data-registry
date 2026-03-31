@@ -34,18 +34,18 @@ This is a git-native, PR-driven data platform. Full design: `research/architectu
 
 ## Required Task Contract
 
-Every workspace MUST have these tasks in `pixi.toml`:
+Every workspace MUST have these tasks in `pixi.toml`. See `workspaces/test-minimal/` for a working reference.
 
 ```toml
 [tasks]
-setup = "..."                                                    # prep, auth, downloads
-extract = { cmd = "...", depends-on = ["setup"], env = { OUTPUT_DIR = "output" } }
-validate = { cmd = "...", depends-on = ["extract"] }
-pipeline = { depends-on = ["setup", "extract", "validate"] }     # runner entry point
-dry-run = { cmd = "...", env = { DRY_RUN = "1", OUTPUT_DIR = "output" } }
+extract = "python extract.py"
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 ```
 
-- `extract` writes Parquet to `$OUTPUT_DIR/`
+- `extract` writes Parquet to `$OUTPUT_DIR/` (defaults to `output/` locally, CI sets a temp dir)
+- Do NOT hardcode `OUTPUT_DIR` in task `env` (breaks CI override)
 - `pipeline` chains all steps, halts on failure
 - `dry-run` produces sample output for PR validation
 - Runner calls: `pixi run -w {name} pipeline`
@@ -56,7 +56,7 @@ dry-run = { cmd = "...", env = { DRY_RUN = "1", OUTPUT_DIR = "output" } }
 |---------|---------|-------------|
 | `github` | `ubuntu-latest` | Lightweight: CSV/JSON downloads, API calls |
 | `hetzner` | `cax11`, `cax21`, `cax31`, `cax41` | Medium: spatial processing, large downloads |
-| `huggingface` | `t4-medium`, `a10g-large`, `a100-large` | GPU: ML inference, embeddings |
+| `huggingface` | `cpu-basic`, `cpu-upgrade`, `t4-small`, `t4-medium`, `l4x1`, `a10g-small`, `a10g-large`, `a10g-largex2`, `a100-large` | GPU/CPU: ML inference, embeddings |
 
 ## Tool Routing
 
@@ -114,23 +114,21 @@ unique_cols = ["admin_id"]
 schema_match = true
 
 [tasks]
-setup = "python scripts/download.py"
-
-extract = { cmd = "python scripts/extract.py", depends-on = ["setup"], env = { OUTPUT_DIR = "output" } }
-
-validate = { cmd = "python scripts/validate.py", depends-on = ["extract"] }
-
+setup = "python download.py"
+extract = { cmd = "python extract.py", depends-on = ["setup"] }
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
 pipeline = { depends-on = ["setup", "extract", "validate"] }
-
-dry-run = { cmd = "python scripts/extract.py", env = { DRY_RUN = "1", OUTPUT_DIR = "output" } }
+dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 ```
 
 ### Guidelines
-- Name tasks descriptively: `setup`, `extract`, `validate`, `pipeline`, `dry-run`
-- Always write output to `$OUTPUT_DIR/` (set via `env`)
+- Required tasks: `extract`, `validate`, `pipeline`, `dry-run`. Optional: `setup`
+- Always write output to `$OUTPUT_DIR/` (defaults to `output/` locally, CI overrides)
+- Do NOT hardcode `OUTPUT_DIR` in task `env` (breaks CI override)
 - Always add validation step (gpio checks + custom)
 - Use `depends-on` for DAG ordering
-- `schema` in `[tool.registry]` = S3 prefix = unique write boundary
+- `schema` in `[tool.registry]` = S3 prefix = DuckLake schema = unique write boundary
+- **Workspace** = isolated pixi environment (directory). **Schema** = data namespace (can differ)
 
 ### Cross-references
 - **workspace-contract** rule for full MUST/MUST NOT list
