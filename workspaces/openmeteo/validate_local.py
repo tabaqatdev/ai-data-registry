@@ -27,7 +27,7 @@ def validate_weather_hourly(db):
         f"SELECT COUNT(*) FROM read_parquet('{WEATHER_HOURLY_PATH}')"
     ).fetchone()[0]
     log.info("Row count: %d", count)
-    assert count >= 1000, f"Too few rows: {count} (expected >= 1000)"
+    assert count >= 500, f"Too few rows: {count} (expected >= 500)"
 
     nulls = db.execute(f"""
         SELECT
@@ -84,7 +84,7 @@ def validate_weather_daily(db):
         f"SELECT COUNT(*) FROM read_parquet('{WEATHER_DAILY_PATH}')"
     ).fetchone()[0]
     log.info("Row count: %d", count)
-    assert count >= 300, f"Too few rows: {count} (expected >= 300)"
+    assert count >= 100, f"Too few rows: {count} (expected >= 100)"
 
     nulls = db.execute(f"""
         SELECT
@@ -128,7 +128,7 @@ def validate_air_quality(db):
 
     log.info("Validating %s...", AIR_QUALITY_PATH)
     log.info("Row count: %d", count)
-    assert count >= 500, f"Too few rows: {count} (expected >= 500)"
+    assert count >= 200, f"Too few rows: {count} (expected >= 200)"
 
     nulls = db.execute(f"""
         SELECT

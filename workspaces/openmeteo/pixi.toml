@@ -18,8 +18,8 @@ python = ">=3.14.3,<3.15"
 duckdb = ">=1.5.1"
 
 [tool.registry]
-description = "Global weather, forecasts, and air quality from Open-Meteo API for ~6,000 cities (pop >= 100K) across 170+ countries"
-schedule = "0 */6 * * *"
+description = "Global weather, forecasts, and air quality from Open-Meteo API for ~3,000 cities (pop >= 200K) across 150+ countries"
+schedule = "0 6 * * *"
 timeout = 30
 tags = ["weather", "climate", "air-quality", "forecast", "global", "open-meteo", "temperature", "precipitation"]
 schema = "openmeteo"
@@ -46,13 +46,13 @@ geometry = true
 unique_cols = ["city", "country_code", "time"]
 
 [tool.registry.checks.weather_daily]
-min_rows = 300
+min_rows = 100
 max_null_pct = 10
 geometry = true
 unique_cols = ["city", "country_code", "date"]
 
 [tool.registry.checks.air_quality]
-min_rows = 500
+min_rows = 200
 max_null_pct = 25
 geometry = true
 unique_cols = ["city", "country_code", "time"]

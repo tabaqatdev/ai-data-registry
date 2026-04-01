@@ -1,28 +1,31 @@
 """Extract global weather and air quality data from Open-Meteo API.
 
-Uses a world cities dataset (population >= 100K) for ~6,000 cities across
-171 countries. City list is loaded at runtime from a public parquet file,
+Uses a world cities dataset (population >= 200K) for ~3,000 cities across
+150+ countries. City list is loaded at runtime from a public parquet file,
 not hardcoded.
 
 Three data streams, each producing a separate GeoParquet file:
 
 1. **weather_hourly**: 24h hourly weather for all cities.
-   30 variables: temperature, humidity, wind, precipitation, cloud cover,
-   pressure, UV, solar radiation, soil conditions, weather codes.
+   10 variables: temperature, humidity, wind, precipitation, cloud cover,
+   pressure, visibility, weather codes.
    Dedup key: (city, country_code, time).
 
-2. **weather_daily**: 7-day daily forecast for all cities.
-   24 variables: min/max/mean temp, precip sum, wind max, sunrise/sunset,
-   UV index, sunshine duration, evapotranspiration.
+2. **weather_daily**: 3-day daily forecast for all cities.
+   8 variables: min/max temp, precip sum, wind max, sunrise/sunset,
+   UV index, weather codes.
    Dedup key: (city, country_code, date).
 
 3. **air_quality**: 24h hourly air quality for all cities.
-   20 variables: PM2.5, PM10, O3, NO2, CO, SO2, dust, US/EU AQI indices.
+   8 variables: PM2.5, PM10, O3, NO2, CO, US/EU AQI, UV index.
    Dedup key: (city, country_code, time).
 
-Open-Meteo free tier: 10,000 calls/day, 600 calls/min.
-~6,000 cities in batches of 50 = 120 batches x 2 endpoints = 240 calls.
-At 4 extractions/day = 960 calls/day (well within limits).
+Open-Meteo free tier: 10,000 weighted calls/day.
+Weight = max(1, vars/10) * max(1, days/7) * locations.
+~3,000 cities: weather 18 vars = 5,400 weight, AQ 8 vars = 3,000 weight.
+Total ~8,400/run, daily schedule fits within 10K limit.
+
+Uses POST method for large batches (200 cities/request) to bypass URL limits.
 
 All data is CC-BY-4.0 licensed from Open-Meteo (national weather services).
 """
@@ -32,6 +35,7 @@ import logging
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -48,7 +52,7 @@ CITIES_URL = (
     "https://raw.githubusercontent.com/tabaqatdev/gdelt-cng/"
     "refs/heads/main/data_helpers/world_cities.parquet"
 )
-MIN_POPULATION = 100_000
+MIN_POPULATION = 200_000
 
 WEATHER_BASE = "https://api.open-meteo.com/v1/forecast"
 AIR_QUALITY_BASE = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -56,93 +60,45 @@ AIR_QUALITY_BASE = "https://air-quality-api.open-meteo.com/v1/air-quality"
 OUT = os.environ.get("OUTPUT_DIR", "output")
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 
-# Hourly weather variables (rich selection for maximum insight)
+# Hourly weather variables (trimmed for API weight efficiency)
 HOURLY_VARS = [
     "temperature_2m",
     "apparent_temperature",
     "relative_humidity_2m",
-    "dew_point_2m",
     "precipitation",
-    "rain",
-    "showers",
-    "snowfall",
-    "snow_depth",
     "weather_code",
-    "pressure_msl",
-    "surface_pressure",
-    "cloud_cover",
-    "cloud_cover_low",
-    "cloud_cover_mid",
-    "cloud_cover_high",
-    "visibility",
     "wind_speed_10m",
-    "wind_direction_10m",
     "wind_gusts_10m",
-    "uv_index",
-    "uv_index_clear_sky",
-    "shortwave_radiation",
-    "direct_radiation",
-    "diffuse_radiation",
-    "sunshine_duration",
-    "is_day",
-    "cape",
-    "soil_temperature_0cm",
-    "soil_moisture_0_to_1cm",
+    "cloud_cover",
+    "pressure_msl",
+    "visibility",
 ]
 
 # Daily weather variables
 DAILY_VARS = [
     "temperature_2m_max",
     "temperature_2m_min",
-    "temperature_2m_mean",
-    "apparent_temperature_max",
-    "apparent_temperature_min",
-    "apparent_temperature_mean",
     "precipitation_sum",
-    "rain_sum",
-    "showers_sum",
-    "snowfall_sum",
-    "precipitation_hours",
-    "precipitation_probability_max",
     "wind_speed_10m_max",
-    "wind_gusts_10m_max",
-    "wind_direction_10m_dominant",
-    "shortwave_radiation_sum",
-    "et0_fao_evapotranspiration",
     "weather_code",
     "sunrise",
     "sunset",
-    "daylight_duration",
-    "sunshine_duration",
     "uv_index_max",
-    "uv_index_clear_sky_max",
 ]
 
 # Air quality variables
 AQ_VARS = [
-    "pm10",
     "pm2_5",
-    "carbon_monoxide",
-    "nitrogen_dioxide",
-    "sulphur_dioxide",
+    "pm10",
     "ozone",
-    "dust",
-    "uv_index",
-    "uv_index_clear_sky",
+    "nitrogen_dioxide",
+    "carbon_monoxide",
     "us_aqi",
-    "us_aqi_pm2_5",
-    "us_aqi_pm10",
-    "us_aqi_nitrogen_dioxide",
-    "us_aqi_ozone",
     "european_aqi",
-    "european_aqi_pm2_5",
-    "european_aqi_pm10",
-    "european_aqi_nitrogen_dioxide",
-    "european_aqi_ozone",
-    "european_aqi_sulphur_dioxide",
+    "uv_index",
 ]
 
-BATCH_SIZE = 50
+BATCH_SIZE = 200
 
 
 def setup(db):
@@ -189,13 +145,21 @@ def load_dry_run_cities(db):
     return rows
 
 
-def fetch_json(url, retries=5, delay=2.0):
-    """Fetch JSON from URL with retry logic and rate-limit awareness."""
+def fetch_json(url, post_data=None, retries=5, delay=2.0):
+    """Fetch JSON with retry logic, rate-limit awareness, and POST support.
+
+    When post_data is provided, sends a POST request with URL-encoded body.
+    This bypasses GET URL length limits for large multi-location batches.
+    """
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url)
             req.add_header("User-Agent", "ai-data-registry/openmeteo")
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            body = None
+            if post_data is not None:
+                body = urllib.parse.urlencode(post_data).encode()
+                req.add_header("Content-Type", "application/x-www-form-urlencoded")
+            with urllib.request.urlopen(req, data=body, timeout=60) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 429:
@@ -216,32 +180,28 @@ def fetch_json(url, retries=5, delay=2.0):
                 raise
 
 
-def build_weather_url(lats, lons):
-    """Build Open-Meteo forecast URL for a batch of coordinates."""
-    lat_str = ",".join(f"{lat:.4f}" for lat in lats)
-    lon_str = ",".join(f"{lon:.4f}" for lon in lons)
-    hourly = ",".join(HOURLY_VARS)
-    daily = ",".join(DAILY_VARS)
-    return (
-        f"{WEATHER_BASE}?"
-        f"latitude={lat_str}&longitude={lon_str}"
-        f"&hourly={hourly}&daily={daily}"
-        f"&timezone=UTC&forecast_days=7"
-        f"&forecast_hours=24"
-    )
+def build_weather_post_data(lats, lons):
+    """Build POST data for Open-Meteo forecast API (multi-location batch)."""
+    return {
+        "latitude": ",".join(f"{lat:.4f}" for lat in lats),
+        "longitude": ",".join(f"{lon:.4f}" for lon in lons),
+        "hourly": ",".join(HOURLY_VARS),
+        "daily": ",".join(DAILY_VARS),
+        "timezone": "UTC",
+        "forecast_days": "3",
+        "forecast_hours": "24",
+    }
 
 
-def build_aq_url(lats, lons):
-    """Build Open-Meteo air quality URL for a batch of coordinates."""
-    lat_str = ",".join(f"{lat:.4f}" for lat in lats)
-    lon_str = ",".join(f"{lon:.4f}" for lon in lons)
-    hourly = ",".join(AQ_VARS)
-    return (
-        f"{AIR_QUALITY_BASE}?"
-        f"latitude={lat_str}&longitude={lon_str}"
-        f"&hourly={hourly}&forecast_days=1"
-        f"&forecast_hours=24"
-    )
+def build_aq_post_data(lats, lons):
+    """Build POST data for Open-Meteo air quality API (multi-location batch)."""
+    return {
+        "latitude": ",".join(f"{lat:.4f}" for lat in lats),
+        "longitude": ",".join(f"{lon:.4f}" for lon in lons),
+        "hourly": ",".join(AQ_VARS),
+        "forecast_days": "1",
+        "forecast_hours": "24",
+    }
 
 
 def create_tables(db):
@@ -268,6 +228,7 @@ def create_tables(db):
             daily_cols.append(f'"{v}" VARCHAR')
         else:
             daily_cols.append(f'"{v}" DOUBLE')
+    daily_cols_sql = ", ".join(daily_cols)
     db.execute(f"""
         CREATE OR REPLACE TABLE weather_daily (
             city VARCHAR,
@@ -278,7 +239,7 @@ def create_tables(db):
             elevation DOUBLE,
             "date" DATE,
             snapshot_time TIMESTAMP,
-            {", ".join(daily_cols)},
+            {daily_cols_sql},
             geometry GEOMETRY
         )
     """)
@@ -312,9 +273,9 @@ def extract_weather(db, cities):
         lons = [c[3] for c in batch]
         pops = [c[4] for c in batch]
 
-        url = build_weather_url(lats, lons)
+        post_data = build_weather_post_data(lats, lons)
         try:
-            data = fetch_json(url)
+            data = fetch_json(WEATHER_BASE, post_data=post_data)
         except Exception as e:
             log.error("Weather batch %d failed: %s", batch_start, e)
             continue
@@ -404,9 +365,9 @@ def extract_air_quality(db, cities):
         lons = [c[3] for c in batch]
         pops = [c[4] for c in batch]
 
-        url = build_aq_url(lats, lons)
+        post_data = build_aq_post_data(lats, lons)
         try:
-            data = fetch_json(url)
+            data = fetch_json(AIR_QUALITY_BASE, post_data=post_data)
         except Exception as e:
             log.warning("Air quality batch %d failed (non-critical): %s", batch_start, e)
             continue
