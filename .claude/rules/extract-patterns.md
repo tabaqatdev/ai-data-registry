@@ -90,7 +90,15 @@ Prefer stdlib `urllib` over `requests`/`httpx` to avoid extra dependencies.
 
 ## 5. GeoParquet Output Standard
 
-All spatial output must follow this pattern:
+**Geometry must have CRS set at creation time**, not at export:
+```sql
+-- When building the table, always attach CRS as VARCHAR (never integer)
+CREATE TABLE my_table AS
+SELECT *, ST_SetCRS(ST_Point(lon, lat), 'EPSG:4326') AS geometry
+FROM raw_data;
+```
+
+Then export with spatial sort and bbox:
 ```sql
 COPY (
     SELECT *, ST_Envelope(geometry) AS bbox
@@ -103,9 +111,7 @@ COPY (
     ROW_GROUP_SIZE 100000
 );
 ```
-
-**CRS:** Always set before export: `ST_SetCRS(ST_Point(lon, lat), 'EPSG:4326')`
-**Validation:** `pixi run gpio check all output.parquet` after writing.
+Validate: `pixi run gpio check all output.parquet`
 
 Non-spatial tables skip geometry/Hilbert but keep ZSTD and row group size.
 
