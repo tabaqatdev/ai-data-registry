@@ -53,16 +53,23 @@ jobs:
             "$CATALOG_PATH" 2>/dev/null || echo "No existing catalog found (first run)."
           echo "CATALOG_PATH=$CATALOG_PATH" >> "$GITHUB_ENV"
 
-      - name: Resolve schema name
-        id: schema
+      - name: Resolve workspace config
+        id: config
         run: |
-          SCHEMA=$(python3 -c "
-          import tomllib
+          python3 -c "
+          import tomllib, json
           with open('workspaces/${{ inputs.workspace }}/pixi.toml', 'rb') as f:
               m = tomllib.load(f)
-          print(m.get('tool', {}).get('registry', {}).get('schema', '${{ inputs.workspace }}'))
-          ")
-          echo "name=$SCHEMA" >> "$GITHUB_OUTPUT"
+          r = m.get('tool', {}).get('registry', {})
+          schema = r.get('schema', '${{ inputs.workspace }}')
+          mode = r.get('mode', 'append')
+          tables = r.get('tables', r.get('table', ''))
+          if isinstance(tables, str):
+              tables = [tables]
+          print(f'schema={schema}')
+          print(f'mode={mode}')
+          print(f'tables={json.dumps(tables)}')
+          " >> "$GITHUB_OUTPUT"
 
       - name: Run pipeline
         env:
@@ -81,15 +88,27 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
         run: |
           OUTPUT_DIR="${{ runner.temp }}/output"
-          if ls "$OUTPUT_DIR"/*.parquet 1>/dev/null 2>&1; then
-            pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-              cp "$OUTPUT_DIR/*.parquet" \
-              "s3://${S3_BUCKET}/${{ steps.schema.outputs.name }}/"
-            echo "Uploaded $(ls "$OUTPUT_DIR"/*.parquet | wc -l) Parquet file(s)."
-          else
+          SCHEMA="${{ steps.config.outputs.schema }}"
+          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+
+          if ! ls "$OUTPUT_DIR"/*.parquet 1>/dev/null 2>&1; then
             echo "No Parquet files found in output directory."
             exit 1
           fi
+
+          # Upload each parquet file into a table subdirectory with a
+          # timestamped filename.  This prevents overwriting previous
+          # extractions and lets DuckLake track each file independently.
+          #   s3://bucket/<schema>/<table>/<timestamp>.parquet
+          COUNT=0
+          for f in "$OUTPUT_DIR"/*.parquet; do
+            TABLE=$(basename "$f" .parquet)
+            pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
+              cp "$f" "s3://${S3_BUCKET}/${SCHEMA}/${TABLE}/${TIMESTAMP}.parquet"
+            COUNT=$((COUNT + 1))
+            echo "  ${TABLE}/${TIMESTAMP}.parquet"
+          done
+          echo "Uploaded ${COUNT} Parquet file(s)."
 
       - name: Upload workspace catalog to S3
         env:

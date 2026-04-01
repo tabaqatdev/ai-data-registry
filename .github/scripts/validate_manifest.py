@@ -35,10 +35,12 @@ from scripts.registry_config import (
     REQUIRED_TASKS,
     RESTRICTIVE_DATA_LICENSES,
     SUPPORTED_BACKENDS,
+    TABLE_NAME_RE,
     VALID_CODE_LICENSES,
     VALID_DATA_LICENSES,
     VALID_MODES,
     WORKSPACE_NAME_RE,
+    get_tables,
     get_workspace_name,
     parse_workspace_manifest,
 )
@@ -184,6 +186,25 @@ def validate(manifest_path: str) -> list[str]:
             errors.append(
                 "When mixed = true, [tool.registry.license].sources array is required. "
                 "Each entry needs: name, license, url."
+            )
+
+    # --- Table(s) ---
+    tables = get_tables(registry)
+    if not tables:
+        errors.append(
+            "Missing 'table' or 'tables' in [tool.registry]. "
+            "Declare table = \"name\" for a single table or tables = [\"a\", \"b\"] for multiple."
+        )
+    if "table" in registry and "tables" in registry:
+        errors.append(
+            "Both 'table' and 'tables' declared in [tool.registry]. Use only one. "
+            "Prefer tables = [...] for multi-table workspaces."
+        )
+    for t in tables:
+        if not TABLE_NAME_RE.match(t):
+            errors.append(
+                f"Invalid table name '{t}'. Must match ^[a-z][a-z0-9_]*$ "
+                "(lowercase, starts with letter, underscores allowed)."
             )
 
     # --- [tool.registry.checks] ---

@@ -23,9 +23,8 @@ schedule = "0 * * * *"
 timeout = 10
 tags = ["aviation", "flights", "ads-b", "opensky", "real-time"]
 schema = "opensky-flights"
-table = "states"
+tables = ["states", "flights"]
 mode = "append"
-partition_by = "day(snapshot_time), hour(snapshot_time)"
 
 [tool.registry.runner]
 backend = "github"
@@ -38,8 +37,17 @@ data_source = "OpenSky Network"
 mixed = false
 
 [tool.registry.checks]
+schema_match = true
+
+[tool.registry.checks.states]
 min_rows = 1000
 max_null_pct = 70
 geometry = true
-unique_cols = ["icao24"]
-schema_match = true
+unique_cols = ["icao24", "snapshot_time"]
+
+[tool.registry.checks.flights]
+min_rows = 0
+max_null_pct = 5
+geometry = false
+unique_cols = ["icao24", "first_seen"]
+optional = true

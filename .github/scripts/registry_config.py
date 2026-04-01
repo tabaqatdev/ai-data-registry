@@ -38,10 +38,14 @@ RESTRICTIVE_DATA_LICENSES = {"CC-BY-NC-4.0", "CC-BY-NC-SA-4.0"}
 WORKSPACE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 # Required fields in [tool.registry]
-REQUIRED_REGISTRY_FIELDS = {"description", "schedule", "timeout", "tags", "schema", "table", "mode"}
+# Note: "table" or "tables" is validated separately (either one must be present)
+REQUIRED_REGISTRY_FIELDS = {"description", "schedule", "timeout", "tags", "schema", "mode"}
 
 # Valid modes
 VALID_MODES = {"append", "replace", "upsert"}
+
+# Table name pattern (lowercase, starts with letter, underscores and digits allowed)
+TABLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Required tasks every workspace must define
 REQUIRED_TASKS = {"pipeline", "extract", "validate", "dry-run"}
@@ -115,6 +119,37 @@ def discover_workspaces(workspaces_dir: str | Path | None = None) -> list[dict]:
             "manifest": manifest,
         })
     return results
+
+
+def get_tables(registry: dict) -> list[str]:
+    """Normalize table/tables field to a list of table names.
+
+    Accepts either form in pixi.toml:
+        table = "name"            -> ["name"]
+        tables = ["a", "b"]      -> ["a", "b"]
+    """
+    tables = registry.get("tables")
+    if tables:
+        return [tables] if isinstance(tables, str) else list(tables)
+    table = registry.get("table")
+    if table:
+        return [table] if isinstance(table, list) is False else list(table)
+    return []
+
+
+def get_table_checks(registry: dict, table_name: str) -> dict:
+    """Get quality checks for a specific table.
+
+    Per-table overrides via [tool.registry.checks.<table_name>] merge on top
+    of global [tool.registry.checks] defaults.  Keys that are dicts (i.e. other
+    table subsections) are filtered out of the base.
+    """
+    checks = registry.get("checks", {})
+    base = {k: v for k, v in checks.items() if not isinstance(v, dict)}
+    table_section = checks.get(table_name)
+    if isinstance(table_section, dict):
+        base.update(table_section)
+    return base
 
 
 def resolve_secret_env(secret_name: str) -> str | None:

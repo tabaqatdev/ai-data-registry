@@ -35,7 +35,7 @@ schedule = "0 6 * * *"
 timeout = 30
 tags = ["topic1", "topic2"]
 schema = "unique_name"        # S3 prefix + DuckLake schema
-table = "table_name"
+table = "table_name"          # single table (or use tables = [...])
 mode = "append"               # append | replace | upsert
 
 [tool.registry.runner]
@@ -55,6 +55,32 @@ geometry = true
 unique_cols = ["id_col"]
 schema_match = true
 ```
+
+### Multi-Table Workspaces
+
+When your extract produces multiple output files, declare `tables` instead of `table`. Each declared table corresponds to a `<table>.parquet` file in `$OUTPUT_DIR/`.
+
+```toml
+[tool.registry]
+tables = ["states", "flights"]
+
+# Per-table checks override global defaults
+[tool.registry.checks]
+schema_match = true
+
+[tool.registry.checks.states]
+min_rows = 1000
+geometry = true
+unique_cols = ["icao24", "snapshot_time"]
+
+[tool.registry.checks.flights]
+min_rows = 0
+geometry = false
+unique_cols = ["icao24", "first_seen"]
+optional = true        # don't fail if file is missing
+```
+
+The CI workflow handles S3 organization automatically. Each table gets its own timestamped subdirectory: `s3://bucket/<schema>/<table>/<timestamp>.parquet`.
 
 ### Allowed Backend + Flavor
 
@@ -76,7 +102,7 @@ pipeline = { depends-on = ["extract", "validate"] }
 dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 ```
 
-- `extract` writes Parquet to `$OUTPUT_DIR/` (defaults to `output/` locally, CI overrides)
+- `extract` writes one `<table_name>.parquet` per declared table to `$OUTPUT_DIR/`
 - Do NOT hardcode `OUTPUT_DIR` in pixi task `env` (breaks CI)
 - `pipeline` is the runner entry point: `pixi run -w {name} pipeline`
 - `dry-run` produces sample output for PR validation
@@ -85,11 +111,12 @@ dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 ### MUST NOT
 
 1. Write to S3 directly (workflow uploads via s5cmd on your behalf)
-2. Declare a `schema` that conflicts with another workspace
+2. Declare a `schema.table` that conflicts with another workspace
 3. Bundle credentials in code (use `$WORKSPACE_SECRET_*` env vars)
 4. Declare unsupported backends or flavors
 5. Include infrastructure configs (Terraform, provisioning scripts)
 6. Hardcode `OUTPUT_DIR` in pixi task `env`
+7. Use output filenames that don't match a declared table name
 
 ## Workspace Isolation
 

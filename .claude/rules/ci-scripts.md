@@ -25,17 +25,19 @@ Each script declares its own dependencies inline (PEP 723 `# /// script` block).
 - Validates workspace names (regex: `^[a-z][a-z0-9-]*$`)
 - Defines valid licenses (OSI-approved code, CC/CDLA/ODbL data)
 - Defines required registry fields, required tasks, valid modes
+- Provides `get_tables(registry)` to normalize `table`/`tables` to a list
+- Provides `get_table_checks(registry, table_name)` for per-table quality config
 
 ## CI Scripts
 
 | Script | Purpose | Used by |
 |--------|---------|---------|
-| `registry_config.py` | Shared config: loads registry.config.toml, workspace discovery, constants | All scripts |
-| `validate_manifest.py` | Layer 1: static analysis (fields, cron, backend/flavor, SPDX, tasks) | `pr-validate.yml` |
-| `check_collisions.py` | Layer 2: schema.table uniqueness | `pr-validate.yml` |
+| `registry_config.py` | Shared config: loads registry.config.toml, workspace discovery, table helpers (`get_tables`, `get_table_checks`) | All scripts |
+| `validate_manifest.py` | Layer 1: static analysis (fields, cron, backend/flavor, SPDX, tasks, table/tables) | `pr-validate.yml` |
+| `check_collisions.py` | Layer 2: schema.table uniqueness (handles multi-table workspaces) | `pr-validate.yml` |
 | `check_catalog.py` | Layer 3: live DuckLake catalog compatibility (skips without S3 creds) | `pr-validate.yml` |
-| `validate_output.py` | Layer 4: Parquet quality (rows, nulls, uniqueness, gpio geometry) | `pr-validate.yml`, `pr-extract.yml` |
-| `merge_catalog.py` | DuckLake merge: diff file lists, register new via `ducklake_add_data_files()` | `merge-catalog.yml` |
+| `validate_output.py` | Layer 4: per-table Parquet quality via `[tool.registry.checks.<table>]` sections | `pr-validate.yml`, `pr-extract.yml` |
+| `merge_catalog.py` | Two-phase DuckLake merge: sync workspace catalog from S3 scan, then diff and register in global | `merge-catalog.yml` |
 | `find_due.py` | Scheduler: evaluate cron vs state, dispatch backend workflows | `scheduler.yml` |
 | `maintenance.py` | Weekly CHECKPOINT on workspace catalogs (expire/delete old snapshots) | `maintenance.yml` |
 | `submit_hf_job.py` | HuggingFace Jobs: submit container, poll status | `extract-huggingface.yml` |

@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.registry_config import discover_workspaces
+from scripts.registry_config import discover_workspaces, get_tables
 
 
 def check_collisions(target_workspace: str | None = None) -> list[str]:
@@ -36,10 +36,11 @@ def check_collisions(target_workspace: str | None = None) -> list[str]:
         if not registry:
             continue
         schema = registry.get("schema", "")
-        table = registry.get("table", "")
-        if schema and table:
-            key = f"{schema}.{table}"
-            claims.setdefault(key, []).append(ws["name"])
+        tables = get_tables(registry)
+        for table in tables:
+            if schema and table:
+                key = f"{schema}.{table}"
+                claims.setdefault(key, []).append(ws["name"])
 
     # Check for duplicates
     for key, owners in claims.items():

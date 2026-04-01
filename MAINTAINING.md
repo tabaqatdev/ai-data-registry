@@ -13,16 +13,25 @@ Full architecture: `research/architecture.md`
 
 **CRITICAL: DuckDB catalog backend, NOT SQLite.** Catalog files use `.duckdb` extension (DuckDB backend), not `.ducklake` (SQLite backend). DuckDB catalogs support remote S3/HTTPS read-only access via httpfs, enabling `ATTACH 'ducklake:s3://bucket/catalog.duckdb' AS cat (READ_ONLY)` without downloading. SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
 
-### Global Catalog Merge (serial, concurrency: 1)
+### Catalog Merge Flow (serial, concurrency: 1)
 
-1. Downloads all workspace catalogs + global from S3
-2. Diffs `ducklake_list_files()` between each workspace and global
-3. Registers only NEW files via `ducklake_add_data_files()` (zero-copy, metadata only)
-4. Uploads updated global catalog to S3
+For each workspace, the merge script (`merge_catalog.py`) runs two phases:
 
-Dedup is mandatory. `ducklake_add_data_files` has no built-in duplicate detection. Same file registered twice = duplicate rows.
+**Phase 1 - Sync workspace catalog:**
+1. Downloads workspace catalog from S3 (or creates a new one)
+2. For each table declared in the workspace pixi.toml, scans S3 for Parquet files under `s3://bucket/<schema>/<table>/*.parquet`
+3. Registers any files not yet tracked in the workspace catalog via `ducklake_add_data_files()`
+4. Uploads the updated workspace catalog back to S3
 
-**Never overwrite a registered file.** `ducklake_add_data_files` caches `file_size_bytes` and `footer_size` at registration time. If a file is later overwritten at the same S3 path (e.g., re-extracted with different data), DuckLake will use stale metadata for range requests, causing HTTP 416 errors. Each extraction must produce a unique filename (e.g., timestamped) or use DuckLake-managed writes (INSERT).
+**Phase 2 - Merge to global:**
+1. Downloads global catalog from S3 (or creates a new one)
+2. Diffs `ducklake_list_files()` between workspace and global for each table
+3. Registers only NEW files in the global catalog (zero-copy, metadata only)
+4. Uploads the updated global catalog to S3
+
+Dedup is mandatory. `ducklake_add_data_files` has no built-in cross-call duplicate detection. Same file registered twice = duplicate rows. The merge script diffs file lists before registering to prevent this.
+
+**Never overwrite a registered file.** `ducklake_add_data_files` caches `file_size_bytes` and `footer_size` at registration time. If a file is later overwritten at the same S3 path (e.g., re-extracted with different data), DuckLake will use stale metadata for range requests, causing HTTP 416 errors. The extract workflow prevents this by uploading each extraction with a timestamped filename (`<timestamp>.parquet`).
 
 ### Compaction Safety
 
@@ -40,12 +49,19 @@ Run compaction only on individual workspace catalogs (which own their data paths
 s3://registry/
     .catalogs/                    # DuckLake catalogs (DuckDB backend)
         weather.duckdb            # Workspace-owned
-        census.duckdb
+        opensky-flights.duckdb
     catalog.duckdb                # Global (merge-queue-owned)
     weather/                      # Workspace data prefix (= schema)
-        observations/
-            year=2026/
-                ducklake-abc123.parquet
+        observations/             # Table subdirectory
+            20260401T060000Z.parquet
+            20260401T120000Z.parquet
+    opensky-flights/              # Multi-table workspace
+        states/                   # Each table gets its own subdirectory
+            20260401T000000Z.parquet
+            20260401T010000Z.parquet
+        flights/
+            20260401T000000Z.parquet
+            20260401T010000Z.parquet
     pr/                           # PR staging (ephemeral, auto-cleaned)
         42/
             weather/...
@@ -53,6 +69,7 @@ s3://registry/
 ```
 
 **Rule:** `schema` in pixi.toml = S3 prefix = workspace write boundary.
+Each table declared in the workspace gets its own subdirectory under the schema prefix. Files are timestamped by the extract workflow to prevent overwrites.
 
 ## S3 Write Isolation
 
@@ -118,7 +135,7 @@ uv run .github/scripts/<script>.py
 | `check_collisions.py` | Layer 2: `schema.table` uniqueness across all workspaces | `pr-validate.yml` |
 | `check_catalog.py` | Layer 3: downloads global catalog from S3, checks table existence and schema compatibility. Gracefully skips when S3 creds unavailable (fork PRs) | `pr-validate.yml` |
 | `validate_output.py` | Layer 4: validates Parquet output (min rows, max null pct, unique cols, gpio geometry check) | `pr-validate.yml`, `pr-extract.yml` |
-| `merge_catalog.py` | Downloads workspace + global catalogs, diffs file lists, registers new files via `ducklake_add_data_files()`, uploads updated global. Sets `auto_compact = false` on global. Uses `allow_missing => true, ignore_extra_columns => true` for schema drift tolerance | `merge-catalog.yml` |
+| `merge_catalog.py` | Two-phase merge: (1) scans S3 for unregistered files per table, syncs workspace catalog; (2) diffs workspace vs global, registers new files. Handles multi-table workspaces. Sets `auto_compact = false` on global. Uses `allow_missing => true, ignore_extra_columns => true` for schema drift tolerance | `merge-catalog.yml` |
 | `find_due.py` | Evaluates workspace cron schedules against state file (workflow artifact), dispatches backend workflows. Builds per-backend inputs (workspace, server_type/flavor/image). `--dry-run` and `--state-file` flags | `scheduler.yml` |
 | `maintenance.py` | Lists all workspace catalogs from S3, runs CHECKPOINT with `expire_older_than = 30 days`, `delete_older_than = 7 days`, cleans orphaned files. `--dry-run` flag | `maintenance.yml` |
 | `submit_hf_job.py` | Submits container job to HF Jobs API via `huggingface_hub.run_job()`, passes S3 creds + workspace secrets, polls status every 30s (max 2h timeout) | `extract-huggingface.yml` |
