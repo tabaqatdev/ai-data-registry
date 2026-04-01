@@ -80,6 +80,7 @@ Rules auto-load when working with matching files. No action needed.
 | `geospatial.md` | `workspaces/**/*.parquet`, `workspaces/**/*.gpkg`, etc. | GeoParquet standard, tool selection, CRS |
 | `nodejs.md` | `workspaces/**/*.js`, `workspaces/**/*.ts` | pnpm only, Node.js patterns |
 | `ci-scripts.md` | `.github/scripts/**`, `.github/workflows/**`, `.github/*.toml` | uv runtime (not pixi), CI script reference, workflow patterns |
+| `logging.md` | `workspaces/**/*.py` | Python logging module, no print(), deferred formatting |
 
 ## Reference: Commands (`.claude/commands/`)
 

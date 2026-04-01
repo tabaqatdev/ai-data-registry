@@ -1,9 +1,18 @@
 """Validate extracted GeoParquet output locally."""
 
+import logging
 import os
 import sys
+import time
 
 import duckdb
+
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    level=logging.DEBUG if os.environ.get("DRY_RUN") else logging.INFO,
+)
+log = logging.getLogger(__name__)
 
 OUT = os.environ.get("OUTPUT_DIR", "output")
 STATES_PATH = f"{OUT}/states.parquet"
@@ -12,10 +21,10 @@ FLIGHTS_PATH = f"{OUT}/flights.parquet"
 
 def validate_states(db):
     """Validate states GeoParquet output."""
-    print(f"Validating {STATES_PATH}...")
+    log.info("Validating %s...", STATES_PATH)
 
     count = db.execute(f"SELECT COUNT(*) FROM read_parquet('{STATES_PATH}')").fetchone()[0]
-    print(f"  Row count: {count}")
+    log.info("Row count: %d", count)
     assert count >= 1000, f"Too few rows: {count} (expected >= 1000)"
 
     nulls = db.execute(f"""
@@ -26,7 +35,7 @@ def validate_states(db):
             COUNT(*) FILTER (WHERE snapshot_time IS NULL) AS null_snapshot
         FROM read_parquet('{STATES_PATH}')
     """).fetchone()
-    print(f"  Null counts - icao24: {nulls[0]}, lon: {nulls[1]}, lat: {nulls[2]}, snapshot: {nulls[3]}")
+    log.debug("Null counts - icao24: %d, lon: %d, lat: %d, snapshot: %d", nulls[0], nulls[1], nulls[2], nulls[3])
     assert nulls[0] == 0, "icao24 must not be null"
     assert nulls[1] == 0, "longitude must not be null"
     assert nulls[2] == 0, "latitude must not be null"
@@ -46,7 +55,7 @@ def validate_states(db):
     assert "geometry" in col_names, f"Missing geometry column. Columns: {col_names}"
     assert "snapshot_time" in col_names, f"Missing snapshot_time column. Columns: {col_names}"
 
-    print("  States validation passed.")
+    log.info("States validation passed.")
 
 
 def validate_flights(db):
@@ -54,14 +63,14 @@ def validate_flights(db):
     try:
         count = db.execute(f"SELECT COUNT(*) FROM read_parquet('{FLIGHTS_PATH}')").fetchone()[0]
     except Exception:
-        print(f"  No flights file at {FLIGHTS_PATH}, skipping")
+        log.info("No flights file at %s, skipping", FLIGHTS_PATH)
         return
 
-    print(f"Validating {FLIGHTS_PATH}...")
-    print(f"  Row count: {count}")
+    log.info("Validating %s...", FLIGHTS_PATH)
+    log.info("Row count: %d", count)
 
     if count == 0:
-        print("  Empty flights file, skipping further checks")
+        log.info("Empty flights file, skipping further checks")
         return
 
     nulls = db.execute(f"""
@@ -71,7 +80,7 @@ def validate_flights(db):
             COUNT(*) FILTER (WHERE last_seen IS NULL) AS null_last
         FROM read_parquet('{FLIGHTS_PATH}')
     """).fetchone()
-    print(f"  Null counts - icao24: {nulls[0]}, first_seen: {nulls[1]}, last_seen: {nulls[2]}")
+    log.debug("Null counts - icao24: %d, first_seen: %d, last_seen: %d", nulls[0], nulls[1], nulls[2])
     assert nulls[0] == 0, "icao24 must not be null in flights"
 
     dupes = db.execute(f"""
@@ -83,10 +92,11 @@ def validate_flights(db):
     """).fetchone()
     assert dupes is None, f"Duplicate (icao24, first_seen) in flights: {dupes}"
 
-    print("  Flights validation passed.")
+    log.info("Flights validation passed.")
 
 
 def main():
+    t0 = time.time()
     db = duckdb.connect()
     db.execute("INSTALL spatial; LOAD spatial;")
 
@@ -94,7 +104,8 @@ def main():
     validate_flights(db)
 
     db.close()
-    print("All validations passed.")
+    elapsed = time.time() - t0
+    log.info("All validations passed (%.1fs)", elapsed)
 
 
 if __name__ == "__main__":

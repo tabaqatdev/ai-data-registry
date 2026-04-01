@@ -19,10 +19,18 @@ All timestamps converted from Unix epoch seconds via make_timestamp().
 GeoParquet written with GEOPARQUET_VERSION 'BOTH' for DuckLake zero-copy.
 """
 
+import logging
 import os
 import time
 
 import duckdb
+
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    level=logging.DEBUG if os.environ.get("DRY_RUN") else logging.INFO,
+)
+log = logging.getLogger(__name__)
 
 STATES_URL = "https://opensky-network.org/api/states/all"
 FLIGHTS_URL = "https://opensky-network.org/api/flights/all"
@@ -46,7 +54,7 @@ def extract_states(db):
 
     Anonymous access: ~10k aircraft globally, 10s update interval.
     """
-    print("Fetching live state vectors from OpenSky Network...")
+    log.info("Fetching live state vectors from OpenSky Network...")
     db.execute(f"""
         CREATE OR REPLACE TABLE raw_states AS
         WITH api AS (
@@ -83,7 +91,7 @@ def extract_states(db):
 
     count = db.execute("SELECT COUNT(*) FROM raw_states").fetchone()[0]
     snap = db.execute("SELECT MIN(snapshot_time) FROM raw_states").fetchone()[0]
-    print(f"  States: {count} aircraft at {snap}")
+    log.info("States: %d aircraft at %s", count, snap)
     return count
 
 
@@ -101,7 +109,7 @@ def extract_flights(db):
     begin = now - 7200  # 2 hours ago (API maximum window)
     url = f"{FLIGHTS_URL}?begin={begin}&end={now}"
 
-    print("Fetching completed flights from OpenSky Network...")
+    log.info("Fetching completed flights from OpenSky Network...")
     try:
         db.execute(f"""
             CREATE OR REPLACE TABLE raw_flights AS
@@ -121,10 +129,10 @@ def extract_flights(db):
             FROM read_json_auto('{url}')
         """)
         count = db.execute("SELECT COUNT(*) FROM raw_flights").fetchone()[0]
-        print(f"  Flights: {count} completed flights in last 2h")
+        log.info("Flights: %d completed flights in last 2h", count)
         return count
     except Exception as e:
-        print(f"  Flights endpoint failed (non-critical): {e}")
+        log.warning("Flights endpoint failed (non-critical): %s", e)
         db.execute("""
             CREATE OR REPLACE TABLE raw_flights AS
             SELECT
@@ -143,7 +151,7 @@ def extract_flights(db):
 def generate_dry_run(db):
     """Generate synthetic data for PR validation."""
     snapshot_ts = int(time.time())
-    print("Dry run: generating synthetic flight data")
+    log.info("Dry run: generating synthetic flight data")
 
     # Synthetic states
     db.execute(f"""
@@ -203,7 +211,7 @@ def generate_dry_run(db):
 
     states_n = db.execute("SELECT COUNT(*) FROM raw_states").fetchone()[0]
     flights_n = db.execute("SELECT COUNT(*) FROM raw_flights").fetchone()[0]
-    print(f"  Dry run states: {states_n}, flights: {flights_n}")
+    log.debug("Dry run states: %d, flights: %d", states_n, flights_n)
     return states_n, flights_n
 
 
@@ -224,7 +232,7 @@ def write_states(db):
             GEOPARQUET_VERSION 'BOTH'
         )
     """)
-    print(f"  Wrote {OUT}/states.parquet ({count} rows)")
+    log.info("Wrote %s/states.parquet (%d rows)", OUT, count)
     return count
 
 
@@ -232,7 +240,7 @@ def write_flights(db):
     """Write flights Parquet (no geometry column, sorted by last_seen)."""
     count = db.execute("SELECT COUNT(*) FROM raw_flights").fetchone()[0]
     if count == 0:
-        print("  No flights to write, skipping")
+        log.info("No flights to write, skipping")
         return 0
 
     db.execute(f"""
@@ -246,11 +254,12 @@ def write_flights(db):
             ROW_GROUP_SIZE 100000
         )
     """)
-    print(f"  Wrote {OUT}/flights.parquet ({count} rows)")
+    log.info("Wrote %s/flights.parquet (%d rows)", OUT, count)
     return count
 
 
 def main():
+    t0 = time.time()
     db = duckdb.connect()
     setup(db)
 
@@ -265,7 +274,8 @@ def main():
     db.close()
 
     label = "Dry run" if DRY_RUN else "Extract"
-    print(f"{label} complete: {states_n} states, {flights_n} flights")
+    elapsed = time.time() - t0
+    log.info("%s complete: %d states, %d flights (%.1fs)", label, states_n, flights_n, elapsed)
 
 
 if __name__ == "__main__":
