@@ -9,7 +9,7 @@ INSTALL ducklake;
 LOAD ducklake;
 ```
 
-Requires DuckDB v1.3.0+.
+Requires DuckDB v1.3.0+. Current spec version: **0.4** (DuckDB 1.5.1).
 
 ## Choosing a catalog backend
 
@@ -44,6 +44,25 @@ ATTACH 'ducklake:sqlite:metadata.sqlite' AS my_lake
 ATTACH 'ducklake:metadata.ducklake' AS my_lake
     (DATA_PATH 's3://my-bucket/lake/');
 ```
+
+### ATTACH options (verified DuckDB 1.5.1 / spec 0.4)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DATA_PATH` | `<metadata_file>.files` | Storage location for Parquet data files |
+| `READ_ONLY` | false | Read-only mode |
+| `AUTOMATIC_MIGRATION` | false | Auto-migrate catalog on spec version mismatch |
+| `OVERRIDE_DATA_PATH` | true | Override stored DATA_PATH for current session |
+| `SNAPSHOT_VERSION` | (none) | Connect at specific snapshot ID |
+| `SNAPSHOT_TIME` | (none) | Connect at specific timestamp |
+| `CREATE_IF_NOT_EXISTS` | true | Create DuckLake if not exists |
+| `DATA_INLINING_ROW_LIMIT` | 0 | Rows for data inlining at creation time |
+| `ENCRYPTED` | false | Enable data encryption |
+| `METADATA_CATALOG` | auto | Attached catalog database name |
+| `METADATA_SCHEMA` | main | Schema for DuckLake metadata tables |
+| `METADATA_PATH` | (from connect string) | Connection string to metadata catalog |
+
+**IMPORTANT**: `MIGRATE_IF_REQUIRED` is NOT supported in DuckLake (DuckDB 1.5.1). Use `AUTOMATIC_MIGRATION` instead. Tested and verified 2026-04-01.
 
 ## Remote S3 Access (DuckLake + httpfs)
 
@@ -102,6 +121,165 @@ SELECT * FROM tbl;
 UPDATE tbl SET name = 'world' WHERE id = 1;
 ```
 
+## DuckLake functions (verified DuckDB 1.5.1)
+
+### ducklake_add_data_files
+
+Registers existing Parquet files with DuckLake without copying them. Once added, **DuckLake assumes ownership** and compaction operations can cause the files to be deleted.
+
+```sql
+CALL ducklake_add_data_files('catalog', 'table', 'file.parquet');
+CALL ducklake_add_data_files('catalog', 'table', 'file.parquet',
+    schema => 'my_schema');
+CALL ducklake_add_data_files('catalog', 'table', 'file.parquet',
+    allow_missing => true);         -- missing table columns get default values
+CALL ducklake_add_data_files('catalog', 'table', 'file.parquet',
+    ignore_extra_columns => true);  -- extra file columns are ignored
+```
+
+**Parameters:**
+- `catalog` (VARCHAR): attached DuckLake catalog name
+- `table` (VARCHAR): target table name
+- `file_path` (VARCHAR): path to Parquet file (single file only)
+- `schema` (named, VARCHAR): target schema, default 'main'
+- `allow_missing` (named, BOOLEAN): substitute defaults for missing columns
+- `ignore_extra_columns` (named, BOOLEAN): ignore extra columns in file
+
+**Known issues:**
+- duckdb/ducklake#579: Hive partition metadata not populated by add_data_files
+- duckdb/ducklake#898: Can be very slow on large catalogs (fixed)
+
+### ducklake_list_files
+
+Returns data files and delete files for a table.
+
+```sql
+SELECT * FROM ducklake_list_files('catalog', 'table');
+SELECT * FROM ducklake_list_files('catalog', 'table', schema => 'my_schema');
+SELECT * FROM ducklake_list_files('catalog', 'table', snapshot_version => 2);
+SELECT * FROM ducklake_list_files('catalog', 'table',
+    snapshot_time => '2025-06-16 15:24:30');
+```
+
+**Return columns:** `data_file`, `data_file_size_bytes`, `data_file_footer_size`, `data_file_encryption_key`, `delete_file`, `delete_file_size_bytes`, `delete_file_footer_size`, `delete_file_encryption_key`
+
+### ducklake_snapshots
+
+```sql
+SELECT * FROM ducklake_snapshots('catalog');
+-- Returns: snapshot_id, snapshot_time, schema_version, changes, author, commit_message, commit_extra_info
+```
+
+### ducklake_table_info
+
+```sql
+SELECT * FROM ducklake_table_info('catalog');
+-- Returns: table_name, schema_id, table_id, table_uuid, file_count, file_size_bytes, delete_file_count, delete_file_size_bytes
+```
+
+### ducklake_table_insertions / ducklake_table_deletions / ducklake_table_changes
+
+```sql
+SELECT * FROM ducklake_table_insertions('catalog', 'schema', 'table', start_snap, end_snap);
+SELECT * FROM ducklake_table_deletions('catalog', 'schema', 'table', start_snap, end_snap);
+SELECT * FROM ducklake_table_changes('catalog', 'schema', 'table', start_snap, end_snap);
+-- Returns rows with snapshot_id, rowid, change_type (insert/delete), plus original columns
+```
+
+## Configuration (set_option)
+
+Set options at global, schema, or table scope. Priority: table > schema > global.
+
+```sql
+-- Global scope
+CALL my_lake.set_option('parquet_compression', 'zstd');
+
+-- Schema scope
+CALL my_lake.set_option('auto_compact', false, schema => 'my_schema');
+
+-- Table scope
+CALL my_lake.set_option('auto_compact', false, schema => 'my_schema', table_name => 'tbl');
+
+-- Query all options
+FROM my_lake.options();
+```
+
+### Available options (verified DuckDB 1.5.1)
+
+| Option | Type | Default | Scopes | Description |
+|--------|------|---------|--------|-------------|
+| `auto_compact` | boolean | true | G/S/T | Include in CHECKPOINT compaction |
+| `expire_older_than` | duration | (unset) | G | Default threshold for ducklake_expire_snapshots |
+| `delete_older_than` | duration | (unset) | G | Threshold for cleanup/orphan deletion |
+| `hive_file_pattern` | boolean | true* | G | Write Hive-style partition paths |
+| `parquet_compression` | string | snappy | G/S/T | snappy, zstd, gzip, lz4, brotli, etc. |
+| `parquet_version` | integer | 1 | G/S/T | Parquet format version (1 or 2) |
+| `parquet_compression_level` | integer | 3 | G/S/T | Compression level |
+| `parquet_row_group_size` | integer | 122880 | G/S/T | Rows per row group |
+| `parquet_row_group_size_bytes` | size | (unset) | G/S/T | Byte limit per row group |
+| `target_file_size` | size | 512MB | G/S/T | Target file size for compaction |
+| `require_commit_message` | boolean | false | G | Require commit message on writes |
+| `rewrite_delete_threshold` | float | 0.95 | G/S/T | Min deleted fraction before rewrite |
+| `per_thread_output` | boolean | false | G/S/T | Separate output files per thread |
+| `data_inlining_row_limit` | integer | 10** | G/S/T | Max rows to inline in metadata |
+| `encrypted` | boolean | false | G/S/T | Encrypt Parquet files |
+
+*hive_file_pattern does not appear in options() until explicitly set, but the effective default is true (Hive-style paths are used for partitioned data).
+
+**Extension-level default `ducklake_default_data_inlining_row_limit` = 10. Small INSERTs (<= 10 rows) are inlined in catalog metadata, not written as Parquet files.
+
+**GOTCHA: `hive_file_pattern` and `require_commit_message` require boolean values, NOT strings.** `set_option('hive_file_pattern', 'false')` will FAIL with "Could not convert string 'false' to INT8". Use `set_option('hive_file_pattern', false)` instead.
+
+## Maintenance
+
+### CHECKPOINT (all-in-one)
+
+Runs all 6 maintenance steps in sequence:
+1. `ducklake_flush_inlined_data`
+2. `ducklake_expire_snapshots`
+3. `ducklake_merge_adjacent_files`
+4. `ducklake_rewrite_data_files`
+5. `ducklake_cleanup_old_files`
+6. `ducklake_delete_orphaned_files`
+
+```sql
+USE my_lake;
+CHECKPOINT;
+```
+
+Respects `auto_compact` setting. If `auto_compact = false`, steps 1/3/4 are skipped.
+
+### Individual maintenance functions
+
+```sql
+-- Expire snapshots older than threshold
+CALL ducklake_expire_snapshots('catalog', older_than => now() - INTERVAL '30 days');
+CALL ducklake_expire_snapshots('catalog', versions => [2, 3]);  -- specific versions
+CALL ducklake_expire_snapshots('catalog', dry_run => true, older_than => now() - INTERVAL '1 week');
+
+-- Merge small adjacent files
+CALL ducklake_merge_adjacent_files('catalog');
+-- Returns: schema_name, table_name, files_processed, files_created
+
+-- Rewrite files with many deletions
+CALL ducklake_rewrite_data_files('catalog');
+
+-- Clean up files from expired snapshots
+CALL ducklake_cleanup_old_files('catalog', cleanup_all => true);
+CALL ducklake_cleanup_old_files('catalog', older_than => now() - INTERVAL '1 week');
+CALL ducklake_cleanup_old_files('catalog', dry_run => true);
+
+-- Clean up orphaned files (from crashed writes)
+CALL ducklake_delete_orphaned_files('catalog', cleanup_all => true);
+CALL ducklake_delete_orphaned_files('catalog', older_than => now() - INTERVAL '7 days');
+CALL ducklake_delete_orphaned_files('catalog', dry_run => true);
+
+-- Flush inlined data to Parquet files
+CALL ducklake_flush_inlined_data('catalog');
+```
+
+**NOTE:** `ducklake_delete_orphaned_files` is already called as step 6 of CHECKPOINT. Calling it separately after CHECKPOINT is redundant.
+
 ## Time travel
 
 ```sql
@@ -134,15 +312,20 @@ ALTER TABLE tbl ADD COLUMN nested.new_field INTEGER;
 ## Partitioning
 
 ```sql
--- Partition by column (Hive-style)
+-- Partition by column (Hive-style by default)
 ALTER TABLE tbl SET PARTITIONED BY (region);
 
 -- Temporal transforms: year, month, day, hour, identity
 ALTER TABLE tbl SET PARTITIONED BY (year(created_at));
+ALTER TABLE tbl SET PARTITIONED BY (year(ts), month(ts));
 
--- Remove partitioning
+-- Remove partitioning (only affects new writes)
 ALTER TABLE tbl RESET PARTITIONED BY;
 ```
+
+Supported transforms: `identity`, `year`, `month`, `day`, `hour`.
+
+Partition layout changes are evolutionary. Only new data uses the updated scheme. Existing data keeps its original layout.
 
 ## Key features
 
@@ -150,16 +333,38 @@ ALTER TABLE tbl RESET PARTITIONED BY;
 - **ACID transactions**: multi-table transactional guarantees via the catalog DB
 - **Multi-client**: multiple DuckDB instances share one dataset via PostgreSQL/SQLite catalog
 - **Cloud storage**: DATA_PATH supports S3, GCS, Azure, R2, NFS
-- **Iceberg interop**: read/write Iceberg-compatible tables (v0.3+)
 - **Geometry support**: spatial columns stored natively (v0.3+)
-- **Data inlining**: sub-millisecond writes for small data
+- **Data inlining**: sub-millisecond writes for small data (default: <= 10 rows)
+- **Partitioning**: Hive-style with temporal transforms (v0.4)
+- **Data change feed**: track insertions/deletions/changes between snapshots
 
 ## Limitations
 
 - No indexes, primary keys, foreign keys, UNIQUE, or CHECK constraints
 - Parquet-only storage (no .duckdb files as data files)
 - DuckDB catalog backend is single-client only
-- Not production-ready yet (target: 1.0 in 2026)
+- `ducklake_add_data_files` accepts only single files (not globs)
+- `hive_file_pattern` / `require_commit_message` must be set with boolean values, not strings
+
+## CRITICAL: Shared-ownership compaction danger
+
+**Verified 2026-04-01 with DuckDB 1.5.1 / DuckLake spec 0.4.**
+
+When using `ducklake_add_data_files` to register the same Parquet files in multiple catalogs (e.g., workspace + global), compaction on one catalog can **delete files still referenced by the other**.
+
+**Reproduction:**
+1. Create workspace catalog, register files via `ducklake_add_data_files`
+2. Register the SAME files in global catalog (zero-copy merge)
+3. Run `ducklake_merge_adjacent_files('workspace')` on workspace
+4. Run `ducklake_expire_snapshots` + `ducklake_cleanup_old_files` on workspace
+5. Result: original files are DELETED from disk/S3
+6. Global catalog still references the deleted files, queries fail
+
+**Root cause:** `ducklake_add_data_files` transfers ownership. DuckLake tracks files for lifecycle management. When workspace compaction merges files, the originals are scheduled for deletion. `cleanup_old_files` then deletes them from storage. The global catalog has no knowledge of this.
+
+**Mitigation:** Set `auto_compact = false` on any catalog whose files are shared with another catalog. If compaction is needed, only run it on catalogs that exclusively own their files, or re-sync dependent catalogs afterward.
+
+Test script: `.github/scripts/test_ducklake_api.py` (TEST 7 demonstrates this).
 
 ## Pitfall: Never Overwrite Registered Files
 
@@ -183,6 +388,16 @@ SELECT path, file_size_bytes, footer_size FROM ducklake_data_file WHERE end_snap
 USE memory;
 DETACH my_lake;
 ```
+
+## Testing
+
+Run the comprehensive API test locally (no S3 needed):
+
+```bash
+uv run .github/scripts/test_ducklake_api.py
+```
+
+This tests all DuckLake APIs used by the registry: ATTACH options, set_option, ducklake_add_data_files, ducklake_list_files, merge workflow, compaction safety, maintenance functions, partitioning, time travel, and more.
 
 ## Documentation
 
