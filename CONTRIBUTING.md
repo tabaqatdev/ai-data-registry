@@ -37,6 +37,8 @@ tags = ["topic1", "topic2"]
 schema = "unique_name"        # S3 prefix + DuckLake schema
 table = "table_name"          # single table (or use tables = [...])
 mode = "append"               # append | replace | upsert
+storage = "eu-hetzner"        # optional, defaults to first defined storage
+# storage = ["eu-hetzner", "us-east"]  # replicate to multiple storages
 
 [tool.registry.runner]
 backend = "github"            # github | hetzner | huggingface
@@ -80,7 +82,7 @@ unique_cols = ["icao24", "first_seen"]
 optional = true        # don't fail if file is missing
 ```
 
-The CI workflow handles S3 organization automatically. Each table gets its own timestamped subdirectory: `s3://bucket/<schema>/<table>/<timestamp>.parquet`.
+The CI workflow handles S3 organization automatically. Each table gets its own timestamped subdirectory: `s3://bucket/{owner}/{repo}/{branch}/{schema}/{table}/{timestamp}.parquet`.
 
 ### Allowed Backend + Flavor
 
@@ -152,17 +154,7 @@ Your PR goes through automatic checks:
 
 1. **Static analysis** - required fields, SPDX licenses, cron syntax, naming, backend/flavor, tasks
 2. **Collision detection** - schema.table unique across all workspaces, no S3 prefix overlap
-3. **Live catalog check** - table existence, schema compatibility for appends
+3. **Live catalog check** - table existence, schema compatibility for appends (skipped on PRs, runs during `/run-extract`)
 4. **Dry run** - `pixi install` + `pixi run -w {name} dry-run` + output validation
 
 All 4 must pass before merge. A maintainer may also trigger `/run-extract` for full end-to-end testing against a staging S3 prefix.
-
-## Useful Commands
-
-| Command | What it does |
-|---------|-------------|
-| `/new-workspace <name> <lang>` | Scaffold workspace with full contract |
-| `/add-dep <pkg> [-w workspace]` | Add dependency (conda preferred, PyPI fallback) |
-| `/run-in <workspace> <task>` | Run a pixi task in a workspace |
-| `/inspect-file <path>` | Inspect any data file (schema, rows, spatial info) |
-| `/convert <in> <out>` | Convert between geospatial formats |

@@ -6,12 +6,12 @@ Full architecture: `research/architecture.md`
 
 ## DuckLake Federation
 
-- One DuckDB catalog per workspace on S3 (`s3://registry/.catalogs/{name}.duckdb`)
-- One global catalog (`s3://registry/catalog.duckdb`) assembled by merge queue
+- One DuckDB catalog per workspace on S3 (`s3://{bucket}/{owner}/{repo}/{branch}/.catalogs/{name}.duckdb`)
+- One global catalog (`s3://{bucket}/{owner}/{repo}/{branch}/catalog.duckdb`) assembled by merge queue
 - Zero-copy: global catalog stores pointers to workspace Parquet files via `ducklake_add_data_files()`
 - No PostgreSQL. DuckDB backend works because only one process writes to each catalog at a time
 
-**CRITICAL: DuckDB catalog backend, NOT SQLite.** Catalog files use `.duckdb` extension (DuckDB backend), not `.ducklake` (SQLite backend). DuckDB catalogs support remote S3/HTTPS read-only access via httpfs, enabling `ATTACH 'ducklake:s3://bucket/catalog.duckdb' AS cat (READ_ONLY)` without downloading. SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
+**CRITICAL: DuckDB catalog backend, NOT SQLite.** Catalog files use `.duckdb` extension (DuckDB backend), not `.ducklake` (SQLite backend). DuckDB catalogs support remote S3/HTTPS read-only access via httpfs, enabling `ATTACH 'ducklake:s3://bucket/{owner}/{repo}/{branch}/catalog.duckdb' AS cat (READ_ONLY)` without downloading. SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
 
 ### Catalog Merge Flow (serial, concurrency: 1)
 
@@ -19,7 +19,7 @@ For each workspace, the merge script (`merge_catalog.py`) runs two phases:
 
 **Phase 1 - Sync workspace catalog:**
 1. Downloads workspace catalog from S3 (or creates a new one)
-2. For each table declared in the workspace pixi.toml, scans S3 for Parquet files under `s3://bucket/<schema>/<table>/*.parquet`
+2. For each table declared in the workspace pixi.toml, scans S3 for Parquet files under `s3://bucket/{owner}/{repo}/{branch}/{schema}/{table}/*.parquet`
 3. Registers any files not yet tracked in the workspace catalog via `ducklake_add_data_files()`
 4. Uploads the updated workspace catalog back to S3
 
@@ -45,31 +45,36 @@ Run compaction only on individual workspace catalogs (which own their data paths
 
 ## S3 Layout
 
+All paths are prefixed with `{owner}/{repo}/{branch}/` for repo and branch isolation:
+
 ```
 s3://registry/
-    .catalogs/                    # DuckLake catalogs (DuckDB backend)
-        weather.duckdb            # Workspace-owned
-        opensky-flights.duckdb
-    catalog.duckdb                # Global (merge-queue-owned)
-    weather/                      # Workspace data prefix (= schema)
-        observations/             # Table subdirectory
-            20260401T060000Z.parquet
-            20260401T120000Z.parquet
-    opensky-flights/              # Multi-table workspace
-        states/                   # Each table gets its own subdirectory
-            20260401T000000Z.parquet
-            20260401T010000Z.parquet
-        flights/
-            20260401T000000Z.parquet
-            20260401T010000Z.parquet
-    pr/                           # PR staging (ephemeral, auto-cleaned)
-        42/
-            weather/...
-        42.duckdb                 # PR-scoped catalog (optional)
+    walkthru-earth/               # GitHub repo owner
+        ai-data-registry/         # GitHub repo name
+            main/                 # Git branch name
+                .catalogs/        # DuckLake catalogs (DuckDB backend)
+                    weather.duckdb
+                    opensky-flights.duckdb
+                catalog.duckdb    # Global (merge-queue-owned)
+                weather/          # Workspace data prefix (= schema)
+                    observations/ # Table subdirectory
+                        20260401T060000Z.parquet
+                        20260401T120000Z.parquet
+                opensky-flights/  # Multi-table workspace
+                    states/
+                        20260401T000000Z.parquet
+                    flights/
+                        20260401T000000Z.parquet
+            pr/                   # PR staging (no branch, keyed on PR number)
+                42/
+                    weather/...
+                42.duckdb         # PR-scoped catalog (optional)
 ```
 
 **Rule:** `schema` in pixi.toml = S3 prefix = workspace write boundary.
 Each table declared in the workspace gets its own subdirectory under the schema prefix. Files are timestamped by the extract workflow to prevent overwrites.
+
+The `{owner}/{repo}/{branch}` prefix is derived from GitHub Actions env vars (`GITHUB_REPOSITORY`, `GITHUB_REF_NAME`). In local dev, these are absent and paths fall back to flat layout.
 
 ## S3 Write Isolation
 
@@ -79,15 +84,22 @@ Exception: HuggingFace backend passes S3 write creds to the container (accepted 
 
 ## Registry Configuration
 
-`.github/registry.config.toml` defines backends, flavors, and secret names:
+`.github/registry.config.toml` defines named storage targets, backends, flavors, and secret names:
 
 ```toml
-[storage]
-catalog_prefix = ".catalogs"       # Where workspace catalogs live in S3
+# Named storage targets (first = default)
+[storage.eu-hetzner]
+provider = "hetzner"
+region = "fsn1"
+public = true
+endpoint_url_secret = "S3_ENDPOINT_URL"
+bucket_secret = "S3_BUCKET"
+region_secret = "S3_REGION"
+write_key_id_secret = "S3_WRITE_KEY_ID"
+write_secret_key_secret = "S3_WRITE_SECRET"
+catalog_prefix = ".catalogs"
 global_catalog = "catalog.duckdb"
-staging_prefix = "pr"              # PR staging: s3://bucket/pr/{pr_number}/{schema}/
-# Secret names (values in GitHub Secrets, not here):
-# S3_ENDPOINT_URL, S3_BUCKET, S3_REGION, S3_WRITE_KEY_ID, S3_WRITE_SECRET
+staging_prefix = "pr"
 
 [backends.github]
 workflow = "extract-github.yml"
@@ -104,13 +116,28 @@ flavors = ["cpu-basic", "cpu-upgrade", "t4-small", "t4-medium", "l4x1", "a10g-sm
 # Secrets: HF_TOKEN
 ```
 
+### Multi-Storage
+
+Workspaces declare storage targets in `[tool.registry]`:
+
+```toml
+storage = "eu-hetzner"                  # single storage (default if omitted)
+storage = ["eu-hetzner", "us-east"]     # replicate to multiple storages
+```
+
+- Data is replicated to ALL declared storages simultaneously
+- Each storage has independent DuckLake catalogs (no cross-storage catalog)
+- Each storage needs its own set of 5 GitHub secrets
+- A future external repo can build a "super-global" catalog referencing files across storages
+- Storage metadata (`provider`, `region`, `public`) is informational and available to catalogs
+
 ## CI Workflows
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
 | `pr-validate.yml` | PR open/sync to main | 4-layer validation (static, collision, catalog, dry-run) |
 | `pr-extract.yml` | `/run-extract` comment or `workflow_dispatch` | Full extraction to staging S3 prefix |
-| `pr-cleanup.yml` | PR close or `workflow_dispatch` | Deletes staging data under `s3://bucket/pr/{pr_number}/` |
+| `pr-cleanup.yml` | PR close or `workflow_dispatch` | Deletes staging data under `s3://bucket/{owner}/{repo}/pr/{pr_number}/` |
 | `extract-github.yml` | Scheduler dispatch or `workflow_dispatch` | Runs workspace on free GitHub runner |
 | `extract-hetzner.yml` | Scheduler dispatch or `workflow_dispatch` | Create-run-delete ephemeral Hetzner ARM server |
 | `extract-huggingface.yml` | Scheduler dispatch or `workflow_dispatch` | Submit to HF Jobs API (GPU/Docker) |
@@ -130,24 +157,36 @@ uv run .github/scripts/<script>.py
 
 | Script | Purpose | Used by |
 |--------|---------|---------|
-| `registry_config.py` | Shared config module: loads `registry.config.toml`, discovers workspaces, validates names, defines valid licenses and required fields | All scripts |
+| `registry_config.py` | Shared config module: loads `registry.config.toml`, discovers workspaces, resolves multi-storage configs, builds S3 paths with owner/repo/branch prefix. Provides `quote_ident()`/`quote_literal()` for SQL escaping and path validation | All scripts |
 | `validate_manifest.py` | Layer 1: static analysis of `[tool.registry]` (fields, cron, backend/flavor, SPDX licenses, required tasks). HF special case: requires `image` field | `pr-validate.yml` |
 | `check_collisions.py` | Layer 2: `schema.table` uniqueness across all workspaces | `pr-validate.yml` |
 | `check_catalog.py` | Layer 3: downloads global catalog from S3, checks table existence and schema compatibility. Gracefully skips when S3 creds unavailable (fork PRs) | `pr-validate.yml` |
 | `validate_output.py` | Layer 4: validates Parquet output (min rows, max null pct, unique cols, gpio geometry check) | `pr-validate.yml`, `pr-extract.yml` |
-| `merge_catalog.py` | Two-phase merge: (1) scans S3 for unregistered files per table, syncs workspace catalog; (2) diffs workspace vs global, registers new files. Handles multi-table workspaces. Sets `auto_compact = false` on global. Uses `allow_missing => true, ignore_extra_columns => true` for schema drift tolerance | `merge-catalog.yml` |
+| `upload_output.py` | Consolidated upload script: reads workspace storage targets, uploads parquet files to all declared storages with owner/repo/branch prefix via s5cmd. Replaces inline upload shell code in extract workflows | `extract-github.yml`, `extract-hetzner.yml` |
+| `merge_catalog.py` | Two-phase merge per storage target: (1) scans S3 for unregistered files per table, syncs workspace catalog; (2) diffs workspace vs global, registers new files. Supports `--storage` flag for single-storage merge. Sets `auto_compact = false` on global | `merge-catalog.yml` |
 | `find_due.py` | Evaluates workspace cron schedules against state file (workflow artifact), dispatches backend workflows. Builds per-backend inputs (workspace, server_type/flavor/image). `--dry-run` and `--state-file` flags | `scheduler.yml` |
 | `maintenance.py` | Lists all workspace catalogs from S3, runs CHECKPOINT with `expire_older_than = 30 days`, `delete_older_than = 7 days`, cleans orphaned files. `--dry-run` flag | `maintenance.yml` |
 | `submit_hf_job.py` | Submits container job to HF Jobs API via `huggingface_hub.run_job()`, passes S3 creds + workspace secrets, polls status every 30s (max 2h timeout) | `extract-huggingface.yml` |
 | `test_local_merge.py` | Local DuckLake merge test (no S3 needed). Simulates batch generation, catalog creation, incremental merge, and CHECKPOINT. Run: `uv run .github/scripts/test_local_merge.py` | Development |
+
+## Security
+
+Security patterns are enforced across all CI workflows and scripts. Full details in `SECURITY.md`, enforced rules in `.claude/rules/ci-security.md`.
+
+**Key principles:**
+- **Env var indirection**: `${{ }}` expressions never appear directly in `run:` blocks
+- **SQL escaping**: All DuckDB f-string SQL uses `quote_ident()` / `quote_literal()` from `registry_config.py`
+- **Input validation**: workspace names, PR numbers, and paths validated before use
+- **Credential isolation**: workspace code never receives S3 write credentials
+- **Cache isolation**: pixi cache writes restricted to main branch, Docker caches scoped by ref
 
 ## CI Gotchas
 
 - **`issue_comment` workflows run from `main`, not the PR branch.** Changes to workflow files must merge to `main` before `/run-extract` uses them.
 - **PR cleanup can race with pr-extract.** If `/run-extract` uploaded data after merge, clean up manually: `gh workflow run pr-cleanup.yml --field pr_number=<N>`
 - **SQL identifiers with hyphens need double-quoting.** `"test-minimal"` not `test-minimal` in DuckDB SQL.
-- **Fork PRs skip Layer 3** (no S3 credentials). The script handles this gracefully.
 - **Scheduler state** lives as a workflow artifact (`scheduler-state.json`), not in git. First run has no state.
+- **All PRs skip Layer 3** (S3 write credentials removed from `pr-validate.yml`). Use `/run-extract` for full end-to-end testing.
 
 ### Debugging CI Failures
 
@@ -252,6 +291,5 @@ All merge jobs share `concurrency: catalog-merge` so they never overlap.
 - gpio: install via `pixi add --pypi geoparquet-io --pre` (PyPI beta)
 - `pixi workspace register` is machine-local. CI must register explicitly
 - Do NOT add `members` to `[workspace]` in root `pixi.toml` (not valid in pixi v0.66.0)
-- Registry config lives at `.github/registry.config.toml` (backend definitions, secret names)
 - All extract workflows trigger `merge-catalog.yml` on success
 - `build-image.yml` triggers on Dockerfile changes pushed to main

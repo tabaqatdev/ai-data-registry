@@ -37,9 +37,9 @@ graph TB
 
     subgraph "Hetzner Object Storage (S3)"
         direction TB
-        S3["s3://registry/{schema}/<br/>*.parquet"]
-        CATS["s3://registry/.catalogs/<br/>{name}.duckdb"]
-        GLOBAL["s3://registry/<br/>catalog.duckdb"]
+        S3["s3://{bucket}/{owner}/{repo}/{branch}/{schema}/<br/>*.parquet"]
+        CATS["s3://{bucket}/{owner}/{repo}/{branch}/.catalogs/<br/>{name}.duckdb"]
+        GLOBAL["s3://{bucket}/{owner}/{repo}/{branch}/<br/>catalog.duckdb"]
     end
 
     subgraph "Free GitHub Runner"
@@ -63,8 +63,8 @@ graph TB
 ### 1. Workspace Extraction (parallel, backend-dependent)
 
 Each workspace runner (GitHub, Hetzner, or HF Jobs, depending on `[tool.registry.runner].backend`):
-1. Pulls its workspace catalog from S3 (`s3://registry/.catalogs/{name}.duckdb`)
-2. Attaches it as a DuckLake with `DATA_PATH 's3://registry/{schema}/'`, `META_JOURNAL_MODE 'WAL'`, `META_BUSY_TIMEOUT 500`
+1. Pulls its workspace catalog from S3 (`s3://{bucket}/{owner}/{repo}/{branch}/.catalogs/{name}.duckdb`)
+2. Attaches it as a DuckLake with `DATA_PATH 's3://{bucket}/{owner}/{repo}/{branch}/'`, `META_JOURNAL_MODE 'WAL'`, `META_BUSY_TIMEOUT 500`
 3. Runs `pixi run -w {name} pipeline` which chains setup → extract → validate (stops on failure)
 4. Uploads the updated workspace catalog back to S3
 
@@ -76,7 +76,7 @@ A single merge job with `concurrency: 1` runs two phases per workspace:
 
 **Phase 1 - Sync workspace catalog:**
 1. Downloads the workspace catalog from S3 (or creates a new one)
-2. For each table in `[tool.registry].tables`, scans S3 for Parquet files under `s3://bucket/<schema>/<table>/*.parquet`
+2. For each table in `[tool.registry].tables`, scans S3 for Parquet files under `s3://bucket/{owner}/{repo}/{branch}/{schema}/{table}/*.parquet`
 3. Registers any files not yet tracked in the workspace catalog
 
 **Phase 2 - Merge to global:**
@@ -136,12 +136,12 @@ def get_new_files(ws_catalog, global_catalog, schema, table):
     """Files in workspace catalog not yet in global catalog."""
     ws_files = duckdb.sql(f"""
         SELECT data_file
-        FROM ducklake_list_files('{ws_catalog}', '{table}', schema => '{schema}')
+        FROM ducklake_list_files({quote_literal(ws_catalog)}, {quote_literal(table)}, schema => {quote_literal(schema)})
     """).fetchall()
 
     global_files = duckdb.sql(f"""
         SELECT data_file
-        FROM ducklake_list_files('{global_catalog}', '{table}', schema => '{schema}')
+        FROM ducklake_list_files({quote_literal(global_catalog)}, {quote_literal(table)}, schema => {quote_literal(schema)})
     """).fetchall()
 
     global_set = {f[0] for f in global_files}
@@ -170,108 +170,53 @@ Run compaction only on individual workspace catalogs (which own their data paths
 
 ## S3 Layout
 
+All paths are prefixed with `{owner}/{repo}/{branch}/` for repo and branch isolation. The prefix is derived from GitHub Actions env vars (`GITHUB_REPOSITORY`, `GITHUB_REF_NAME`). In local dev, the prefix is absent (flat layout).
+
 ```
 s3://registry/
-    .catalogs/                         # All DuckLake catalogs (DuckDB backend)
-        weather.duckdb                 # Workspace catalog (workspace-owned)
-        opensky-flights.duckdb
-    catalog.duckdb                     # Global catalog (merge-queue-owned)
+    walkthru-earth/                    # GitHub repo owner
+        ai-data-registry/             # GitHub repo name
+            main/                     # Git branch name
+                .catalogs/            # All DuckLake catalogs (DuckDB backend)
+                    weather.duckdb    # Workspace catalog (workspace-owned)
+                    opensky-flights.duckdb
+                catalog.duckdb        # Global catalog (merge-queue-owned)
 
-    weather/                           # Workspace data prefix (= schema name)
-        observations/                  # Table subdirectory
-            20260401T060000Z.parquet   # Timestamped by extract workflow
-            20260402T060000Z.parquet
-    opensky-flights/                   # Multi-table workspace
-        states/                        # Each table gets its own subdirectory
-            20260401T000000Z.parquet
-            20260401T010000Z.parquet
-        flights/
-            20260401T000000Z.parquet
-            20260401T010000Z.parquet
+                weather/              # Workspace data prefix (= schema name)
+                    observations/     # Table subdirectory
+                        20260401T060000Z.parquet
+                        20260402T060000Z.parquet
+                opensky-flights/      # Multi-table workspace
+                    states/
+                        20260401T000000Z.parquet
+                    flights/
+                        20260401T000000Z.parquet
 
-    pr/                                # PR staging data (ephemeral, auto-cleaned)
-        42/                            # PR number
-            weather/
-                observations/
-                    20260401T060000Z.parquet
-        42.duckdb                      # PR-scoped workspace catalog (optional)
+            pr/                       # PR staging (no branch, keyed on PR number)
+                42/
+                    weather/
+                        observations/
+                            20260401T060000Z.parquet
+                42.duckdb             # PR-scoped workspace catalog (optional)
 ```
 
 **Rule: `schema` in pixi.toml = S3 prefix = workspace write boundary.** Each workspace can only write to its own prefix. The extract workflow timestamps each file to prevent overwrites and enable historical accumulation.
+
+**Multi-storage:** Workspaces can declare multiple named storage targets in `[tool.registry].storage`. Data is replicated to all declared storages. Each storage has independent catalogs. See `.github/registry.config.toml` for storage definitions.
 
 ---
 
 ## Workspace Manifest (`pixi.toml`)
 
-Each workspace carries pipeline metadata in `[tool.registry]` (pixi ignores unknown `[tool.*]` tables).
+Each workspace carries pipeline metadata in `[tool.registry]` (pixi ignores unknown `[tool.*]` tables). The full contract is defined in `CONTRIBUTING.md` and enforced by `.claude/rules/workspace-contract.md`.
 
-```toml
-# workspaces/weather/pixi.toml
-[workspace]
-channels = ["conda-forge"]
-name = "weather"
-platforms = ["osx-arm64", "linux-64", "win-64"]
-
-[tool.registry]
-description = "Daily weather observations from national stations"
-schedule = "0 6 * * *"        # cron: daily at 06:00 UTC
-timeout = 30                  # minutes
-tags = ["weather", "climate", "daily"]
-schema = "weather"            # DuckLake schema = S3 prefix
-table = "observations"        # single table (or tables = ["a", "b"] for multiple)
-mode = "append"               # append | replace | upsert
-
-[tool.registry.runner]
-backend = "hetzner"           # Must be supported: github | hetzner | huggingface
-flavor = "cax11"              # Must be allowed for the backend (validated in PR checks)
-# image = "ghcr.io/..."       # Docker image (required for huggingface)
-
-[tool.registry.license]
-code = "Apache-2.0"           # SPDX for extraction code (OSI-approved)
-data = "CC-BY-4.0"            # SPDX for output data
-data_source = "National Weather Service"
-mixed = false
-# When mixed = true, list per-source:
-# sources = [
-#   { name = "NWS", license = "public-domain", url = "https://..." },
-#   { name = "ECMWF", license = "CC-BY-4.0", url = "https://..." },
-# ]
-
-[tool.registry.checks]
-min_rows = 1000
-max_null_pct = 5
-geometry = true               # gpio check all
-unique_cols = ["station_id", "date"]
-schema_match = true
-
-[dependencies]
-python = ">=3.12,<3.13"
-
-[pypi-dependencies]
-requests = ">=2.31"
-
-[tasks]
-# --- Required tasks (every workspace) ---
-# setup: download source data, auth checks, environment prep (optional but standardized)
-setup = "python scripts/setup.py"
-
-# extract: core pipeline, writes Parquet to $OUTPUT_DIR
-# IMPORTANT: Do NOT hardcode OUTPUT_DIR in task env. CI passes its own value.
-# The extract script defaults to "output/" when $OUTPUT_DIR is not set.
-extract = "python extract.py"
-
-# validate: quality checks on extracted output
-validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
-
-# --- Entry point (what the runner calls) ---
-# pipeline: single entry point that chains the full lifecycle
-# pixi stops the chain on any non-zero exit, so a failed extract skips validate
-pipeline = { depends-on = ["setup", "extract", "validate"] }
-
-# --- Optional tasks ---
-# dry-run: PR validation mode (sample output, no full extraction)
-dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
-```
+Key design choices:
+- `[tool.registry]` stores schedule, schema, table(s), mode, storage, backend, license, and quality checks
+- `[tool.registry.runner]` declares compute needs (backend + flavor). PR validation enforces supported list
+- `[tool.registry.license]` requires SPDX identifiers for both code and data
+- `[tool.registry.checks]` supports per-table overrides via `[tool.registry.checks.<table_name>]`
+- Tasks use pixi `depends-on` chains. `pipeline` is the entry point, `dry-run` is for PR validation
+- Any language works. The compute backend is separate from the pipeline language
 
 ### Task Lifecycle
 
@@ -312,28 +257,6 @@ inputs = ["extract.py", "config/*.yaml"]
 outputs = ["output/*.parquet"]
 ```
 
-### The Contract
-
-Every workspace MUST:
-1. Have a `pixi.toml` with `[tool.registry]` metadata including `[tool.registry.license]` and `[tool.registry.runner]`
-2. Declare a `[tool.registry.runner].backend` from the supported list (`github`, `hetzner`, `huggingface`)
-3. Declare an allowed `flavor` for the chosen backend
-4. Have a `pipeline` task as the runner entry point (chains setup → extract → validate)
-5. Have an `extract` task that writes Parquet to `$OUTPUT_DIR/`
-6. Have a `validate` task that checks output quality
-7. Have a `dry-run` task for PR validation (sample output with `DRY_RUN=1`)
-8. Declare unique `schema.table` pair(s) that no other workspace owns (supports `table` or `tables`)
-9. Exit 0 on success, non-zero on failure
-
-Every workspace MUST NOT:
-1. Write to S3 directly (the workflow uploads via s5cmd on its behalf)
-2. Declare a `schema` that conflicts with another workspace's prefix
-3. Bundle credentials in code (use `$WORKSPACE_SECRET_*` env vars)
-4. Declare unsupported backends or flavors (PR validation will reject)
-5. Include infrastructure configs (Terraform, cloud provisioning scripts, etc.)
-
-Any language is fine. Python, TypeScript, SQL, GDAL CLI, whatever works. The compute backend is separate from the pipeline language.
-
 ---
 
 ## S3 Write Isolation
@@ -350,7 +273,7 @@ sequenceDiagram
     HR->>HR: pixi run -w weather extract<br/>(writes to local $OUTPUT_DIR)
     HR->>HR: Validate output<br/>(prefix, gpio, row counts)
     Note over HR: Workflow step (not workspace code)<br/>has S3 WRITE creds
-    HR->>S3: s5cmd cp per table<br/>s3://registry/weather/&lt;table&gt;/&lt;ts&gt;.parquet
+    HR->>S3: upload_output.py<br/>s3://{bucket}/{owner}/{repo}/{branch}/weather/&lt;table&gt;/&lt;ts&gt;.parquet
     HR->>S3: Upload workspace catalog
 ```
 
@@ -406,10 +329,7 @@ Layer 3 pulls the global catalog from S3 at runtime to check for conflicts. No c
 
 ### License Validation
 
-- `code` must be OSI-approved SPDX (Apache-2.0, MIT, etc.)
-- `data` must be recognized SPDX (CC-BY-4.0, CC0-1.0, ODbL-1.0, etc.)
-- `mixed = true` requires per-source `sources` array
-- Restrictive licenses (CC-BY-NC) trigger a warning label, not a block
+License validation rules are in `CONTRIBUTING.md`.
 
 ### PR Staging Extraction
 
@@ -420,11 +340,11 @@ After the 4-layer validation passes, a maintainer can trigger a **full extractio
 **Flow:**
 1. `pr-extract.yml` checks permissions, parses workspace names from the comment (or auto-detects from PR diff)
 2. Checks out the PR branch, runs `pixi run -w {name} pipeline` (full extraction, not dry-run)
-3. Uploads Parquet output to `s3://bucket/pr/{pr_number}/{schema}/` (staging prefix)
+3. Uploads Parquet output to `s3://bucket/{owner}/{repo}/pr/{pr_number}/{workspace}/` (staging prefix)
 4. Runs output validation (row counts, nulls, geometry)
 5. Posts a PR comment with DuckDB query examples to inspect the staged data
 
-**Cleanup:** `pr-cleanup.yml` triggers on PR close (merge or abandon), deletes all data under `s3://bucket/pr/{pr_number}/`. Fully automatic.
+**Cleanup:** `pr-cleanup.yml` triggers on PR close (merge or abandon), deletes all data under `s3://bucket/{owner}/{repo}/pr/{pr_number}/`. Fully automatic.
 
 **Why PR number, not branch name:** Branch names can contain `/` and special characters that break S3 paths. PR numbers are unique, short, and stable.
 
@@ -494,11 +414,7 @@ flavor = "cax11"              # Must be an allowed flavor for this backend
 
 ### Supported Backends (maintainer-managed)
 
-| Backend | `backend` | Allowed `flavor` values | GPU? | Pixi? | Cost | When to use |
-|---------|-----------|------------------------|------|-------|------|-------------|
-| **GitHub Free** | `github` | `ubuntu-latest` | No | Yes (setup-pixi) | $0 | Lightweight: CSV/JSON downloads, API calls, small transforms |
-| **Hetzner Cloud** | `hetzner` | `cax11`, `cax21`, `cax31`, `cax41` | No | Yes (setup-pixi) | ~0.006 EUR/min | Medium: spatial processing, large downloads, moderate compute |
-| **Hugging Face Jobs** | `huggingface` | `cpu-basic`, `cpu-upgrade`, `t4-small`, `t4-medium`, `l4x1`, `a10g-small`, `a10g-large`, `a10g-largex2`, `a100-large` | Yes (except cpu-*) | No (Docker) | Pay-per-use | GPU/CPU: ML inference, weather models, embeddings |
+See `CONTRIBUTING.md` for the full backend/flavor table.
 
 New backends (e.g., Verda bare-metal, AWS Batch) are added by the maintainer when needed, not by contributors. To request a new backend or a heavy one-shot job, open an issue.
 
@@ -572,21 +488,24 @@ jobs:
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
           WORKSPACE_SECRET_API_KEY: ${{ secrets[format('WS_{0}_API_KEY', inputs.workspace)] }}
-        run: pixi run -w ${{ inputs.workspace }} pipeline
+          WORKSPACE: ${{ inputs.workspace }}
+        run: pixi run -w "$WORKSPACE" pipeline
 
-      - name: Upload to S3
+      - name: Upload output to all storages
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_WRITE_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
+          S3_WRITE_SECRET: ${{ secrets.S3_WRITE_SECRET }}
+          WORKSPACE: ${{ inputs.workspace }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
-          SCHEMA="..."  # resolved from pixi.toml [tool.registry].schema
-          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
-          for f in "${{ runner.temp }}/output"/*.parquet; do
-            TABLE=$(basename "$f" .parquet)
-            pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-              cp "$f" "s3://${{ secrets.S3_BUCKET }}/${SCHEMA}/${TABLE}/${TIMESTAMP}.parquet"
-          done
+          # upload_output.py handles multi-storage replication and
+          # owner/repo/branch prefix from GITHUB_REPOSITORY/GITHUB_REF_NAME
+          uv run .github/scripts/upload_output.py \
+            --workspace "$WORKSPACE" \
+            --output-dir "${RUNNER_TEMP}/output" \
+            --timestamp "$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
 ### Backend: Hetzner Cloud (`backend = "hetzner"`)
@@ -645,21 +564,24 @@ jobs:
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
           WORKSPACE_SECRET_API_KEY: ${{ secrets[format('WS_{0}_API_KEY', inputs.workspace)] }}
-        run: pixi run -w ${{ inputs.workspace }} pipeline
+          WORKSPACE: ${{ inputs.workspace }}
+        run: pixi run -w "$WORKSPACE" pipeline
 
-      - name: Upload to S3
+      - name: Upload output to all storages
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_WRITE_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
+          S3_WRITE_SECRET: ${{ secrets.S3_WRITE_SECRET }}
+          WORKSPACE: ${{ inputs.workspace }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
-          SCHEMA="..."  # resolved from pixi.toml [tool.registry].schema
-          TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
-          for f in "${{ runner.temp }}/output"/*.parquet; do
-            TABLE=$(basename "$f" .parquet)
-            pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-              cp "$f" "s3://${{ secrets.S3_BUCKET }}/${SCHEMA}/${TABLE}/${TIMESTAMP}.parquet"
-          done
+          # upload_output.py handles multi-storage replication and
+          # owner/repo/branch prefix from GITHUB_REPOSITORY/GITHUB_REF_NAME
+          uv run .github/scripts/upload_output.py \
+            --workspace "$WORKSPACE" \
+            --output-dir "${RUNNER_TEMP}/output" \
+            --timestamp "$(date -u +%Y%m%dT%H%M%SZ)"
 
   delete-runner:
     needs: [create-runner, extract]
@@ -685,6 +607,10 @@ jobs:
 - `RUNNER_PAT` must be a fine-grained PAT with minimum scope (`actions:write` for runner management only). Prefer a GitHub App token for automatic rotation.
 - Add a Hetzner cleanup cron job that deletes servers tagged `github-runner-*` older than 2 hours, as a safety net for partial `create-runner` failures where the server was created but `server_id` was not captured.
 - `post-cleanup: true` in setup-pixi ensures `.pixi`, pixi binary, and rattler cache are deleted after the job, preventing credential leaks on self-hosted runners.
+
+### Workflow Security Patterns
+
+All workflows follow the security patterns defined in `MAINTAINING.md` (Security section) and enforced by `.claude/rules/ci-security.md`. For the full threat model and trust boundaries, see `SECURITY.md`.
 
 ### Backend: Hugging Face Jobs (`backend = "huggingface"`)
 
@@ -740,7 +666,8 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
-        run: pixi run -w ${{ inputs.workspace }} pipeline
+          WORKSPACE: ${{ inputs.workspace }}
+        run: pixi run -w "$WORKSPACE" pipeline
 ```
 
 **Security note:** The HF backend passes S3 write credentials directly to the container, breaking the write-isolation pattern used by GitHub/Hetzner backends. This is an accepted trade-off because HF containers run on external infrastructure without workflow-level upload steps. Mitigate by scoping S3 credentials per workspace if Hetzner adds per-prefix IAM support, or use a proxy that validates write paths.
@@ -788,9 +715,9 @@ When a workspace needs compute that no supported backend covers (e.g., bare-meta
 
 1. Create `extract-{backend}.yml` workflow with the lifecycle pattern (provision → run → destroy)
 2. Provision credentials and add them as repository secrets
-3. Add the backend and allowed flavors to `SUPPORTED_BACKENDS` in `find-due.py`
-4. Update `validate-manifest.py` to accept the new backend in PR checks
-5. Document allowed flavors and cost in this section
+3. Add backend entry to `.github/registry.config.toml`
+4. `registry_config.py` auto-discovers from config. Update `find_due.py` if dispatch inputs differ
+5. `validate_manifest.py` auto-validates against config
 
 **Prior art for heavy/custom workloads:**
 - dem-terrain used Verda Cloud (Terraform: 360 vCPU, 1.4 TB RAM, 2 TB NVMe) for a one-shot global DEM conversion
@@ -832,20 +759,7 @@ Regardless of backend, the pixi task contract is the same. The backend determine
 
 ### PR Validation Workflow
 
-PR checks always use a free GitHub runner with `dry-run`, regardless of the workspace's production backend:
-
-```yaml
-# .github/workflows/pr-validate.yml (relevant step)
-- name: Dry run extraction
-  env:
-    OUTPUT_DIR: ${{ runner.temp }}/output
-  run: pixi run -w ${{ matrix.workspace }} dry-run
-
-- name: Validate output
-  run: |
-    pixi run gpio check all ${{ runner.temp }}/output/*.parquet
-    # Additional checks from [tool.registry.checks]
-```
+PR checks always use a free GitHub runner with `dry-run`, regardless of the workspace's production backend. See `.github/workflows/pr-validate.yml` for the full implementation (uses env var indirection for all `${{ }}` expressions per the security rules).
 
 ---
 
@@ -885,11 +799,11 @@ DuckDB catalogs (not SQLite) support remote S3/HTTPS read-only access via httpfs
 -- Attach individual workspace catalogs directly from S3 (read-only, no download needed)
 -- CRITICAL: This requires DuckDB catalog backend (.duckdb), NOT SQLite (.ducklake).
 -- SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
-ATTACH 'ducklake:s3://registry/.catalogs/weather.duckdb' AS weather (READ_ONLY);
-ATTACH 'ducklake:s3://registry/.catalogs/census.duckdb' AS census (READ_ONLY);
+ATTACH 'ducklake:s3://registry/{owner}/{repo}/{branch}/.catalogs/weather.duckdb' AS weather (READ_ONLY);
+ATTACH 'ducklake:s3://registry/{owner}/{repo}/{branch}/.catalogs/census.duckdb' AS census (READ_ONLY);
 
 -- Or attach the global catalog for everything
-ATTACH 'ducklake:s3://registry/catalog.duckdb' AS registry (READ_ONLY);
+ATTACH 'ducklake:s3://registry/{owner}/{repo}/{branch}/catalog.duckdb' AS registry (READ_ONLY);
 
 -- Cross-catalog join
 SELECT w.city, c.pop
@@ -1013,53 +927,18 @@ No catalogs in git. No state files in git. Everything ephemeral is on S3 or work
 
 ---
 
-## Registry Configuration (`.github/registry.config.toml`)
+## Registry Configuration
 
-Central, vendor-agnostic config file. This is the single source of truth for backend definitions and storage secret names. Forks customize this file + set the corresponding GitHub repository secrets.
-
-```toml
-[storage]
-endpoint_url_secret = "S3_ENDPOINT_URL"    # Secret name, not value
-bucket_secret = "S3_BUCKET"
-catalog_prefix = ".catalogs"
-global_catalog = "catalog.duckdb"
-staging_prefix = "pr"                      # PR staging: pr/{pr_number}/{schema}/
-
-[backends.github]
-workflow = "extract-github.yml"
-flavors = ["ubuntu-latest"]
-
-[backends.hetzner]
-workflow = "extract-hetzner.yml"
-flavors = ["cax11", "cax21", "cax31", "cax41"]
-
-[backends.huggingface]
-workflow = "extract-huggingface.yml"
-flavors = ["cpu-basic", "cpu-upgrade", "t4-small", "t4-medium", "l4x1",
-           "a10g-small", "a10g-large", "a10g-largex2", "a100-large"]
-```
-
-All Python scripts read this config via `registry_config.py` (shared module, stdlib only). Backend validation, workspace discovery, and storage paths all resolve from this single file.
+`.github/registry.config.toml` is the single source of truth for storage targets, backends, and secret names. See `MAINTAINING.md` (Registry Configuration section) for the full config reference and multi-storage documentation. See `.claude/rules/registry-config.md` for editing guidelines.
 
 ---
 
 ## CI Script Tooling
 
-Helper scripts in `.github/scripts/` use **uv** with **PEP 723 inline script metadata**, not pixi. This keeps CI-only dependencies (croniter, duckdb Python API, huggingface-hub) completely separate from the shared developer tools in root `pixi.toml`.
-
-```python
-# /// script
-# requires-python = ">=3.12"
-# dependencies = [
-#   "croniter>=6.0",
-# ]
-# ///
-```
-
-Workflows install uv via `astral-sh/setup-uv@v7`, then call scripts with `uv run .github/scripts/script.py`. uv reads the inline metadata, creates a cached environment with the declared dependencies, and runs the script. No requirements.txt, no separate pixi environment, no lock file needed.
+Helper scripts in `.github/scripts/` use **uv** with **PEP 723 inline script metadata**, not pixi. This keeps CI-only dependencies (croniter, duckdb Python API, huggingface-hub) separate from shared developer tools. See `MAINTAINING.md` (CI Scripts section) for the full script reference.
 
 **Two runtimes, clear separation:**
-- **pixi** runs workspace pipelines and shared tools (`pixi run -w {name} pipeline`, `pixi run s5cmd`, `pixi run gpio`)
+- **pixi** runs workspace pipelines and shared tools (`pixi run -w {name} pipeline`)
 - **uv** runs CI helper scripts (`uv run .github/scripts/validate_manifest.py`)
 
 ---
@@ -1107,15 +986,15 @@ Issues discovered during architecture research that affect this design:
 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
-| Catalog storage | SQLite on S3, pulled at runtime | No git bloat, no PostgreSQL, no infra. Serial merge queue handles locking. |
-| Catalog topology | One SQLite per workspace + one global | Each workspace is autonomous. Global is a zero-copy federation layer. |
+| Catalog storage | DuckDB catalog on S3, pulled at runtime | No git bloat, no PostgreSQL, no infra. Serial merge queue handles locking. |
+| Catalog topology | One DuckDB catalog per workspace + one global | Each workspace is autonomous. Global is a zero-copy federation layer. |
 | Merge method | `ducklake_add_data_files` (not `COPY FROM DATABASE`) | Zero-copy, incremental, works on 2nd+ run. COPY FROM DATABASE fails on re-run and copies data. |
 | Compaction | Workspace catalogs only. Global has `auto_compact = false`. | Prevents global catalog from deleting workspace-owned files on S3. |
 | Schema.table ownership | One workspace owns one schema.table | Prevents corruption from multiple writers. Enforced in PR checks. |
 | Licensing | Required `[tool.registry.license]` with code + data SPDX | Legal clarity. Mixed sources must declare per-source. |
 | S3 write isolation | Workspace code gets READ-ONLY creds. Workflow uploads via s5cmd (parallel, 256 workers). | Safest. No workspace can touch another's prefix or any catalog. |
 | S3 upload tool | s5cmd (Go, conda-forge, all platforms). Shared root dependency. | 12-32x faster than AWS CLI. Parallel by default. Hetzner-documented S3 tool. |
-| Fork strategy | PRs merge code only. Data extracted fresh on upstream after merge. | No SQLite merging. Fork catalogs are disposable. |
+| Fork strategy | PRs merge code only. Data extracted fresh on upstream after merge. | No catalog merging. Fork catalogs are disposable. |
 | State tracking | Workflow artifacts (not git) | No git commits for ephemeral state. |
 | Task contract | `pipeline` entry point chains setup → extract → validate via `depends-on` | Single command for runners. Pixi stops on failure. Language-agnostic. Locally testable. |
 | Runner backends | Multi-backend via `[tool.registry.runner]`: github, hetzner, huggingface. Maintainer-managed, contributor picks from supported list. | Each workspace picks compute that fits its needs. New backends added by maintainer only. PR validation enforces supported list. |

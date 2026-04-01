@@ -2,7 +2,9 @@
 
 Go to **Settings > Secrets and variables > Actions** in your GitHub repository.
 
-## Required (All Backends)
+## Required: Default Storage (eu-hetzner)
+
+These secret names match `[storage.eu-hetzner]` in `.github/registry.config.toml`. If you add more storage targets, set the corresponding secrets for each (the secret names are configured per-storage in the config file).
 
 | Secret | Description | Example |
 |--------|-------------|---------|
