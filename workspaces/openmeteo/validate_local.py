@@ -52,13 +52,13 @@ def validate_weather_hourly(db):
     assert null_pct <= 15, f"Too many null temperatures: {null_pct}%"
 
     dupes = db.execute(f"""
-        SELECT city, country_code, "time", COUNT(*) AS n
+        SELECT city, country_code, latitude, longitude, "time", COUNT(*) AS n
         FROM read_parquet('{WEATHER_HOURLY_PATH}')
-        GROUP BY city, country_code, "time"
+        GROUP BY city, country_code, latitude, longitude, "time"
         HAVING n > 1
         LIMIT 1
     """).fetchone()
-    assert dupes is None, f"Duplicate (city, country_code, time): {dupes}"
+    assert dupes is None, f"Duplicate (city, country_code, lat, lon, time): {dupes}"
 
     cols = db.execute(
         f"DESCRIBE SELECT * FROM read_parquet('{WEATHER_HOURLY_PATH}')"
@@ -99,13 +99,13 @@ def validate_weather_daily(db):
     assert nulls[2] == 0, "date must not be null"
 
     dupes = db.execute(f"""
-        SELECT city, country_code, "date", COUNT(*) AS n
+        SELECT city, country_code, latitude, longitude, "date", COUNT(*) AS n
         FROM read_parquet('{WEATHER_DAILY_PATH}')
-        GROUP BY city, country_code, "date"
+        GROUP BY city, country_code, latitude, longitude, "date"
         HAVING n > 1
         LIMIT 1
     """).fetchone()
-    assert dupes is None, f"Duplicate (city, country_code, date): {dupes}"
+    assert dupes is None, f"Duplicate (city, country_code, lat, lon, date): {dupes}"
 
     cols = db.execute(
         f"DESCRIBE SELECT * FROM read_parquet('{WEATHER_DAILY_PATH}')"
@@ -152,13 +152,13 @@ def validate_air_quality(db):
     assert null_pct <= 25, f"Too many null AQI values: {null_pct}%"
 
     dupes = db.execute(f"""
-        SELECT city, country_code, "time", COUNT(*) AS n
+        SELECT city, country_code, latitude, longitude, "time", COUNT(*) AS n
         FROM read_parquet('{AIR_QUALITY_PATH}')
-        GROUP BY city, country_code, "time"
+        GROUP BY city, country_code, latitude, longitude, "time"
         HAVING n > 1
         LIMIT 1
     """).fetchone()
-    assert dupes is None, f"Duplicate (city, country_code, time): {dupes}"
+    assert dupes is None, f"Duplicate (city, country_code, lat, lon, time): {dupes}"
 
     cols = db.execute(
         f"DESCRIBE SELECT * FROM read_parquet('{AIR_QUALITY_PATH}')"

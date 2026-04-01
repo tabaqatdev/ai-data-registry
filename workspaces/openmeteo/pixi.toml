@@ -43,16 +43,16 @@ schema_match = true
 min_rows = 1000
 max_null_pct = 15
 geometry = true
-unique_cols = ["city", "country_code", "time"]
+unique_cols = ["city", "country_code", "latitude", "longitude", "time"]
 
 [tool.registry.checks.weather_daily]
 min_rows = 100
 max_null_pct = 10
 geometry = true
-unique_cols = ["city", "country_code", "date"]
+unique_cols = ["city", "country_code", "latitude", "longitude", "date"]
 
 [tool.registry.checks.air_quality]
 min_rows = 200
 max_null_pct = 25
 geometry = true
-unique_cols = ["city", "country_code", "time"]
+unique_cols = ["city", "country_code", "latitude", "longitude", "time"]
