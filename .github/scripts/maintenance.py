@@ -12,7 +12,7 @@ Downloads each workspace catalog from S3, runs DuckLake CHECKPOINT
 (expire snapshots, merge adjacent files, cleanup old files, delete orphans),
 then uploads the updated catalog back to S3.
 
-Skips the global catalog (it has auto_compact = false).
+Iterates over all defined storages. Skips the global catalog (it has auto_compact = false).
 
 CRITICAL: Catalog files use the DuckDB backend (.duckdb), NOT SQLite (.ducklake).
 DuckDB catalogs support remote S3/HTTPS read-only access via httpfs.
@@ -23,38 +23,38 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scripts.registry_config import get_storage_config
+from scripts.registry_config import (
+    build_s3_root,
+    load_storage_configs,
+    quote_literal,
+    resolve_storage_env,
+    s5cmd_for_storage,
+)
 
 
-def s5cmd(*args: str) -> subprocess.CompletedProcess:
-    """Run s5cmd with the configured endpoint URL."""
-    endpoint = os.environ.get("S3_ENDPOINT_URL", "")
-    cmd = ["pixi", "run", "s5cmd", "--endpoint-url", endpoint, *args]
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+def list_workspace_catalogs(storage_name: str) -> list[str]:
+    """List all workspace catalog files on S3 for a storage target."""
+    storages = load_storage_configs()
+    cfg = storages[storage_name]
+    root = build_s3_root(storage_name)
+    prefix = f"{root}{cfg['catalog_prefix']}/"
+    global_name = cfg["global_catalog"]
 
-
-def list_workspace_catalogs() -> list[str]:
-    """List all workspace catalog files on S3."""
-    storage = get_storage_config()
-    bucket = os.environ.get("S3_BUCKET", "")
-    prefix = f"s3://{bucket}/{storage['catalog_prefix']}/"
-    global_name = storage["global_catalog"]
-
-    result = s5cmd("ls", prefix)
+    result = s5cmd_for_storage(storage_name, "ls", prefix)
     if result.returncode != 0:
         print(f"  WARNING: Could not list catalogs at {prefix}")
         return []
 
     catalogs = []
     for line in result.stdout.strip().splitlines():
-        # s5cmd ls output: "2026/03/30 12:00:00   1234  s3://bucket/.catalogs/weather.duckdb"
+        # s5cmd ls output: "2026/03/30 12:00:00   1234  s3://bucket/owner/repo/branch/.catalogs/weather.duckdb"
         parts = line.strip().split()
         if not parts:
             continue
@@ -69,16 +69,18 @@ def list_workspace_catalogs() -> list[str]:
     return catalogs
 
 
-def maintain_catalog(s3_path: str, local_dir: str, dry_run: bool = False) -> bool:
+def maintain_catalog(
+    storage_name: str, s3_path: str, local_dir: str, dry_run: bool = False
+) -> bool:
     """Run maintenance on a single workspace catalog."""
     filename = s3_path.split("/")[-1]
     ws_name = filename.replace(".duckdb", "")
-    local_path = os.path.join(local_dir, filename)
+    local_path = os.path.join(local_dir, f"{storage_name}_{filename}")
 
-    print(f"\n  Processing: {ws_name} ({filename})")
+    print(f"\n  [{storage_name}] Processing: {ws_name} ({filename})")
 
     # Download
-    result = s5cmd("cp", s3_path, local_path)
+    result = s5cmd_for_storage(storage_name, "cp", s3_path, local_path)
     if result.returncode != 0:
         print(f"    ERROR: Failed to download {s3_path}")
         return False
@@ -96,33 +98,32 @@ def maintain_catalog(s3_path: str, local_dir: str, dry_run: bool = False) -> boo
     con = duckdb.connect()
     con.execute("INSTALL ducklake; LOAD ducklake;")
 
-    # Configure S3 via CREATE SECRET so DuckLake internal operations
-    # use the correct endpoint and credentials.
-    endpoint = os.environ.get("S3_ENDPOINT_URL", "")
-    access_key = os.environ.get("AWS_ACCESS_KEY_ID", "")
-    secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-    region = os.environ.get("S3_REGION", "")
+    # Configure S3 via CREATE SECRET for DuckLake operations
+    creds = resolve_storage_env(storage_name)
+    endpoint = creds["endpoint_url"] or ""
 
     if endpoint:
-        from urllib.parse import urlparse
         parsed = urlparse(endpoint)
         s3_host = parsed.hostname or endpoint.replace("https://", "").replace("http://", "")
 
+        access_key = creds["access_key"] or ""
+        secret_key = creds["secret_key"] or ""
+        region = creds["region"] or "auto"
         con.execute(f"""
             CREATE SECRET registry_s3 (
                 TYPE S3,
-                KEY_ID '{access_key}',
-                SECRET '{secret_key}',
-                ENDPOINT '{s3_host}',
+                KEY_ID {quote_literal(access_key)},
+                SECRET {quote_literal(secret_key)},
+                ENDPOINT {quote_literal(s3_host)},
                 URL_STYLE 'path',
                 USE_SSL {str(parsed.scheme == 'https').lower()},
-                REGION '{region or "auto"}'
+                REGION {quote_literal(region)}
             )
         """)
 
     try:
         con.execute(f"""
-            ATTACH 'ducklake:{local_path}' AS ws (
+            ATTACH {quote_literal('ducklake:' + local_path)} AS ws (
                 AUTOMATIC_MIGRATION true
             )
         """)
@@ -156,7 +157,7 @@ def maintain_catalog(s3_path: str, local_dir: str, dry_run: bool = False) -> boo
     con.close()
 
     # Upload updated catalog
-    result = s5cmd("cp", local_path, s3_path)
+    result = s5cmd_for_storage(storage_name, "cp", local_path, s3_path)
     if result.returncode != 0:
         print(f"    ERROR: Failed to upload updated catalog.")
         return False
@@ -173,34 +174,38 @@ def main():
 
     print("Starting workspace catalog maintenance...")
 
-    catalogs = list_workspace_catalogs()
-    if not catalogs:
-        print("No workspace catalogs found on S3.")
-        return
+    storages = load_storage_configs()
+    total_succeeded = 0
+    total_failed = 0
 
-    print(f"Found {len(catalogs)} workspace catalog(s).")
-
-    succeeded = 0
-    failed = 0
-
-    def run_maintenance(catalog_dir: str):
-        nonlocal succeeded, failed
-        for s3_path in catalogs:
-            if maintain_catalog(s3_path, catalog_dir, dry_run=args.dry_run):
-                succeeded += 1
+    def run_maintenance(sn: str, catalog_list: list[str], catalog_dir: str):
+        nonlocal total_succeeded, total_failed
+        for s3_path in catalog_list:
+            if maintain_catalog(sn, s3_path, catalog_dir, dry_run=args.dry_run):
+                total_succeeded += 1
             else:
-                failed += 1
+                total_failed += 1
 
-    if args.catalog_dir:
-        os.makedirs(args.catalog_dir, exist_ok=True)
-        run_maintenance(args.catalog_dir)
-    else:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            run_maintenance(tmpdir)
+    for storage_name in storages:
+        print(f"\n=== Storage: {storage_name} ===")
 
-    print(f"\nMaintenance complete: {succeeded} succeeded, {failed} failed.")
+        catalogs = list_workspace_catalogs(storage_name)
+        if not catalogs:
+            print(f"No workspace catalogs found for storage '{storage_name}'.")
+            continue
 
-    if failed > 0:
+        print(f"Found {len(catalogs)} workspace catalog(s).")
+
+        if args.catalog_dir:
+            os.makedirs(args.catalog_dir, exist_ok=True)
+            run_maintenance(storage_name, catalogs, args.catalog_dir)
+        else:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                run_maintenance(storage_name, catalogs, tmpdir)
+
+    print(f"\nMaintenance complete: {total_succeeded} succeeded, {total_failed} failed.")
+
+    if total_failed > 0:
         sys.exit(1)
 
 

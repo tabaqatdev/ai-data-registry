@@ -35,6 +35,8 @@ from scripts.registry_config import (
     get_table_checks,
     get_tables,
     parse_workspace_manifest,
+    quote_ident,
+    quote_literal,
 )
 
 
@@ -51,7 +53,7 @@ def validate_table_with_duckdb(parquet_path: str, table_name: str, checks: dict)
     con = duckdb.connect()
 
     try:
-        con.execute(f"CREATE VIEW output AS SELECT * FROM read_parquet('{parquet_path}')")
+        con.execute(f"CREATE VIEW output AS SELECT * FROM read_parquet({quote_literal(parquet_path)})")
     except duckdb.Error as e:
         errors.append(f"Failed to read {parquet_path}: {e}")
         return errors
@@ -74,7 +76,7 @@ def validate_table_with_duckdb(parquet_path: str, table_name: str, checks: dict)
         ).fetchall()
         for (col_name,) in columns:
             null_count = con.execute(
-                f'SELECT COUNT(*) FROM output WHERE "{col_name}" IS NULL'
+                f'SELECT COUNT(*) FROM output WHERE {quote_ident(col_name)} IS NULL'
             ).fetchone()[0]
             null_pct = (null_count / row_count) * 100
             if null_pct > max_null_pct:
@@ -86,7 +88,7 @@ def validate_table_with_duckdb(parquet_path: str, table_name: str, checks: dict)
     # Uniqueness
     unique_cols = checks.get("unique_cols", [])
     if unique_cols:
-        cols_str = ", ".join(f'"{c}"' for c in unique_cols)
+        cols_str = ", ".join(quote_ident(c) for c in unique_cols)
         try:
             dup_count = con.execute(f"""
                 SELECT COUNT(*) FROM (

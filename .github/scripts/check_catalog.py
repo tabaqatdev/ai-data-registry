@@ -30,31 +30,31 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.registry_config import (
+    WORKSPACE_NAME_RE,
     WORKSPACES_DIR,
-    get_storage_config,
+    build_global_catalog_path,
+    get_default_storage_name,
     parse_workspace_registry,
+    quote_literal,
+    resolve_storage_env,
+    s5cmd_for_storage,
 )
 
 
 def s3_available() -> bool:
-    """Check if S3 credentials are set in the environment."""
-    return bool(
-        os.environ.get("S3_ENDPOINT_URL")
-        and os.environ.get("S3_BUCKET")
-        and os.environ.get("AWS_ACCESS_KEY_ID")
-    )
-
-
-def download_catalog(s3_path: str, local_path: str) -> bool:
-    """Download a catalog file from S3 via s5cmd. Returns True on success."""
-    endpoint = os.environ.get("S3_ENDPOINT_URL", "")
+    """Check if S3 credentials are set for the default storage."""
     try:
-        result = subprocess.run(
-            ["pixi", "run", "s5cmd", "--endpoint-url", endpoint, "cp", s3_path, local_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        storage_name = get_default_storage_name()
+        creds = resolve_storage_env(storage_name)
+        return bool(creds["endpoint_url"] and creds["bucket"] and creds["access_key"])
+    except ValueError:
+        return False
+
+
+def download_catalog(storage_name: str, s3_path: str, local_path: str) -> bool:
+    """Download a catalog file from S3 via s5cmd. Returns True on success."""
+    try:
+        result = s5cmd_for_storage(storage_name, "cp", s3_path, local_path)
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
@@ -78,15 +78,14 @@ def check_catalog(workspace_name: str) -> list[str]:
     if not schema or not table:
         return errors  # Already caught by Layer 1
 
-    storage = get_storage_config()
-    bucket = os.environ.get("S3_BUCKET", "")
-    global_catalog_s3 = f"s3://{bucket}/{storage['global_catalog']}"
+    storage_name = get_default_storage_name()
+    global_catalog_s3 = build_global_catalog_path(storage_name)
 
     # Download global catalog to temp dir
     with tempfile.TemporaryDirectory() as tmpdir:
         local_catalog = os.path.join(tmpdir, "catalog.duckdb")
 
-        if not download_catalog(global_catalog_s3, local_catalog):
+        if not download_catalog(storage_name, global_catalog_s3, local_catalog):
             print("  INFO: Global catalog not found on S3 (first run or new deployment). Skipping catalog check.")
             return errors
 
@@ -98,9 +97,7 @@ def check_catalog(workspace_name: str) -> list[str]:
             con.execute("INSTALL ducklake; LOAD ducklake;")
 
             try:
-                con.execute(f"""
-                    ATTACH 'ducklake:{local_catalog}' AS global_cat (READ_ONLY)
-                """)
+                con.execute(f"ATTACH {quote_literal('ducklake:' + local_catalog)} AS global_cat (READ_ONLY)")
             except duckdb.Error as e:
                 print(f"  WARNING: Could not attach global catalog: {e}")
                 return errors
@@ -108,7 +105,7 @@ def check_catalog(workspace_name: str) -> list[str]:
             # Check if table exists
             try:
                 result = con.execute(f"""
-                    SELECT COUNT(*) FROM ducklake_list_files('global_cat', '{table}', schema => '{schema}')
+                    SELECT COUNT(*) FROM ducklake_list_files('global_cat', {quote_literal(table)}, schema => {quote_literal(schema)})
                 """).fetchone()
                 file_count = result[0] if result else 0
 
@@ -120,14 +117,14 @@ def check_catalog(workspace_name: str) -> list[str]:
 
                         # Verify column names and types match between workspace and global catalog
                         try:
-                            global_cols = con.execute(f"""
+                            global_cols = con.execute("""
                                 SELECT column_name, data_type
                                 FROM information_schema.columns
                                 WHERE table_catalog = 'global_cat'
-                                  AND table_schema = '{schema}'
-                                  AND table_name = '{table}'
+                                  AND table_schema = ?
+                                  AND table_name = ?
                                 ORDER BY ordinal_position
-                            """).fetchall()
+                            """, [schema, table]).fetchall()
 
                             if global_cols:
                                 # Read the workspace's pixi.toml to find output schema
@@ -158,6 +155,10 @@ def main():
     parser = argparse.ArgumentParser(description="Check workspace against global catalog")
     parser.add_argument("--workspace", required=True, help="Workspace name to check")
     args = parser.parse_args()
+
+    if not WORKSPACE_NAME_RE.match(args.workspace):
+        print(f"ERROR: Invalid workspace name: {args.workspace}")
+        sys.exit(1)
 
     if not s3_available():
         print("  SKIPPED: S3 credentials not available (expected for fork PRs). Catalog check skipped.")

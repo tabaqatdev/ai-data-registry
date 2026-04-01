@@ -42,6 +42,7 @@ from scripts.registry_config import (
     WORKSPACE_NAME_RE,
     get_tables,
     get_workspace_name,
+    load_storage_configs,
     parse_workspace_manifest,
 )
 
@@ -206,6 +207,26 @@ def validate(manifest_path: str) -> list[str]:
                 f"Invalid table name '{t}'. Must match ^[a-z][a-z0-9_]*$ "
                 "(lowercase, starts with letter, underscores allowed)."
             )
+
+    # --- Storage targets ---
+    storage_val = registry.get("storage")
+    if storage_val is not None:
+        storage_names = [storage_val] if isinstance(storage_val, str) else storage_val
+        if not isinstance(storage_names, list) or not all(isinstance(s, str) for s in storage_names):
+            errors.append(
+                "Invalid 'storage' in [tool.registry]. "
+                "Must be a string or list of strings (e.g., storage = \"eu-hetzner\" "
+                "or storage = [\"eu-hetzner\", \"us-east\"])."
+            )
+        else:
+            available = load_storage_configs()
+            for s in storage_names:
+                if s not in available:
+                    errors.append(
+                        f"Unknown storage target '{s}' in [tool.registry].storage. "
+                        f"Available: {', '.join(available.keys())}. "
+                        "Define new targets in .github/registry.config.toml."
+                    )
 
     # --- [tool.registry.checks] ---
     checks = registry.get("checks")

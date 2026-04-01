@@ -26,6 +26,15 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.registry_config import (
+    WORKSPACE_NAME_RE,
+    get_default_storage_name,
+    resolve_storage_env,
+)
 
 
 def main():
@@ -48,6 +57,10 @@ def main():
         print("ERROR: HF_JOB_WORKSPACE not set.")
         sys.exit(1)
 
+    if not WORKSPACE_NAME_RE.match(workspace):
+        print(f"ERROR: Invalid workspace name: {workspace}")
+        sys.exit(1)
+
     from huggingface_hub import run_job
 
     # Build environment variables for the container
@@ -56,12 +69,32 @@ def main():
         "OUTPUT_DIR": "/output",
     }
 
-    # Pass S3 credentials so the container can upload directly
-    secrets = {}
-    for var in ["S3_ENDPOINT_URL", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]:
+    # Pass repo/branch prefix info so the container can construct correct S3 paths
+    for var in ["GITHUB_REPOSITORY", "GITHUB_REF_NAME"]:
         val = os.environ.get(var)
         if val:
-            secrets[var] = val
+            env[var] = val
+
+    # Pass S3 credentials so the container can upload directly.
+    # Resolve from registry config so multi-storage secret names work correctly.
+    secrets = {}
+    try:
+        storage_name = get_default_storage_name()
+        creds = resolve_storage_env(storage_name)
+        if creds["endpoint_url"]:
+            secrets["S3_ENDPOINT_URL"] = creds["endpoint_url"]
+        if creds["bucket"]:
+            secrets["S3_BUCKET"] = creds["bucket"]
+        if creds["region"]:
+            secrets["S3_REGION"] = creds["region"]
+        if creds["access_key"]:
+            secrets["S3_WRITE_KEY_ID"] = creds["access_key"]
+            secrets["AWS_ACCESS_KEY_ID"] = creds["access_key"]
+        if creds["secret_key"]:
+            secrets["S3_WRITE_SECRET"] = creds["secret_key"]
+            secrets["AWS_SECRET_ACCESS_KEY"] = creds["secret_key"]
+    except (ValueError, KeyError) as e:
+        print(f"WARNING: Could not resolve storage credentials: {e}")
 
     # Pass workspace-specific secrets
     ws_api_key = os.environ.get("WORKSPACE_SECRET_API_KEY")
