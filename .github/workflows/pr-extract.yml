@@ -2,7 +2,7 @@ name: "PR Extract (Staging)"
 run-name: "PR Extract: #${{ inputs.pr_number || github.event.issue.number }} ${{ inputs.workspace || '' }}"
 
 # Maintainer-triggered full extraction on PR data.
-# Uploads to s3://bucket/pr/{pr_number}/{schema}/ instead of production paths.
+# Uploads to s3://bucket/{owner}/{repo}/pr/{pr_number}/{workspace}/ instead of production paths.
 # Triggered by:
 #   1. Maintainer comment "/run-extract" on a PR
 #   2. Manual workflow_dispatch with PR number and workspace
@@ -46,13 +46,16 @@ jobs:
         if: github.event_name == 'issue_comment'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
         run: |
-          PERMISSION=$(gh api repos/${{ github.repository }}/collaborators/${{ github.event.comment.user.login }}/permission --jq '.permission' 2>/dev/null || echo "none")
-          ROLE=$(gh api orgs/${{ github.repository_owner }}/memberships/${{ github.event.comment.user.login }} --jq '.role' 2>/dev/null || echo "")
+          PERMISSION=$(gh api "repos/$REPO/collaborators/$COMMENT_USER/permission" --jq '.permission' 2>/dev/null || echo "none")
+          ROLE=$(gh api "orgs/$REPO_OWNER/memberships/$COMMENT_USER" --jq '.role' 2>/dev/null || echo "")
           if [[ "$PERMISSION" == "admin" || "$PERMISSION" == "maintain" || "$PERMISSION" == "write" || "$ROLE" == "admin" || "$ROLE" == "member" ]]; then
-            echo "User ${{ github.event.comment.user.login }} has access (permission=$PERMISSION, org_role=$ROLE)."
+            echo "User $COMMENT_USER has access (permission=$PERMISSION, org_role=$ROLE)."
           else
-            echo "User ${{ github.event.comment.user.login }} does not have write access. Ignoring."
+            echo "User $COMMENT_USER does not have write access. Ignoring."
             exit 1
           fi
 
@@ -60,15 +63,19 @@ jobs:
         id: parse
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          INPUT_WORKSPACE: ${{ inputs.workspace }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PR_NUMBER="${{ inputs.pr_number }}"
-            WORKSPACES='["${{ inputs.workspace }}"]'
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            PR_NUMBER="$INPUT_PR_NUMBER"
+            WORKSPACES="[\"$INPUT_WORKSPACE\"]"
           else
-            PR_NUMBER="${{ github.event.issue.number }}"
+            PR_NUMBER="$ISSUE_NUMBER"
             # Parse workspace names from comment: /run-extract [workspace1] [workspace2]
-            COMMENT="${{ github.event.comment.body }}"
-            WS_ARGS=$(echo "$COMMENT" | sed 's|/run-extract||' | xargs)
+            WS_ARGS=$(echo "$COMMENT_BODY" | sed 's|/run-extract||' | xargs)
             if [ -z "$WS_ARGS" ]; then
               # Auto-detect changed workspaces in the PR
               CHANGED=$(gh pr diff "$PR_NUMBER" --name-only -- workspaces/ 2>/dev/null || echo "")
@@ -76,6 +83,20 @@ jobs:
             fi
             WORKSPACES=$(echo "$WS_ARGS" | tr ' ' '\n' | jq -R . | jq -sc .)
           fi
+
+          # Validate PR number is numeric
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: PR number must be numeric, got: $PR_NUMBER"
+            exit 1
+          fi
+
+          # Validate workspace names
+          for WS in $(echo "$WORKSPACES" | jq -r '.[]'); do
+            if ! [[ "$WS" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "ERROR: Invalid workspace name: $WS"
+              exit 1
+            fi
+          done
 
           # Get PR head ref for checkout
           REF=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
@@ -89,8 +110,10 @@ jobs:
         if: github.event_name == 'issue_comment'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          REPO: ${{ github.repository }}
         run: |
-          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
             -f content='rocket' 2>/dev/null || true
 
   extract:
@@ -112,20 +135,24 @@ jobs:
       - uses: prefix-dev/setup-pixi@v0.9.4
         with:
           cache: true
+          cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
       - name: Register workspace
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           pixi workspace register \
-            --name ${{ matrix.workspace }} \
-            --path workspaces/${{ matrix.workspace }}
+            --name "$WORKSPACE" \
+            --path "workspaces/$WORKSPACE"
 
       - name: Run full pipeline
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
           WORKSPACE_SECRET_API_KEY: ${{ secrets[format('WS_{0}_API_KEY', matrix.workspace)] }}
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           mkdir -p "$OUTPUT_DIR"
-          pixi run -w ${{ matrix.workspace }} pipeline
+          pixi run -w "$WORKSPACE" pipeline
 
       - name: Upload to S3 staging prefix
         env:
@@ -134,9 +161,15 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
           PR_NUMBER: ${{ needs.parse-command.outputs.pr_number }}
+          WORKSPACE: ${{ matrix.workspace }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          OUTPUT_DIR="${{ runner.temp }}/output"
-          STAGING_PREFIX="s3://${S3_BUCKET}/pr/${PR_NUMBER}/${{ matrix.workspace }}"
+          OUTPUT_DIR="${RUNNER_TEMP}/output"
+          REPO_PREFIX=""
+          [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] && REPO_PREFIX="${REPO_OWNER}/${REPO_NAME}/"
+          STAGING_PREFIX="s3://${S3_BUCKET}/${REPO_PREFIX}pr/${PR_NUMBER}/${WORKSPACE}"
 
           if ls "$OUTPUT_DIR"/*.parquet 1>/dev/null 2>&1; then
             pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
@@ -151,9 +184,10 @@ jobs:
       - name: Validate staged output
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           uv run .github/scripts/validate_output.py \
-            workspaces/${{ matrix.workspace }}/pixi.toml \
+            "workspaces/$WORKSPACE/pixi.toml" \
             "$OUTPUT_DIR"
 
   report:
@@ -174,6 +208,8 @@ jobs:
           PR_NUMBER: ${{ needs.parse-command.outputs.pr_number }}
           WORKSPACES: ${{ needs.parse-command.outputs.workspaces }}
           EXTRACT_RESULT: ${{ needs.extract.result }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           STATUS_ICON="✅"
           if [ "$EXTRACT_RESULT" != "success" ]; then
@@ -183,8 +219,10 @@ jobs:
           # Build workspace list and query examples
           WS_LIST=""
           QUERY_EXAMPLES=""
+          REPO_PREFIX=""
+          [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] && REPO_PREFIX="${REPO_OWNER}/${REPO_NAME}/"
           for WS in $(echo "$WORKSPACES" | jq -r '.[]'); do
-            STAGING_PREFIX="s3://${S3_BUCKET}/pr/${PR_NUMBER}/${WS}"
+            STAGING_PREFIX="s3://${S3_BUCKET}/${REPO_PREFIX}pr/${PR_NUMBER}/${WS}"
             WS_LIST="${WS_LIST}\n- \`${WS}\` → \`${STAGING_PREFIX}/\`"
 
             # Read schema.table from workspace pixi.toml if available

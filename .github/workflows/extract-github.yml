@@ -36,101 +36,72 @@ jobs:
           cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
       - name: Register workspace
+        env:
+          WORKSPACE: ${{ inputs.workspace }}
         run: |
           pixi workspace register \
-            --name ${{ inputs.workspace }} \
-            --path workspaces/${{ inputs.workspace }}
+            --name "$WORKSPACE" \
+            --path "workspaces/$WORKSPACE"
 
-      - name: Pull workspace catalog from S3
+      - name: Pull workspace catalog from S3 (default storage)
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+          WORKSPACE: ${{ inputs.workspace }}
+          RUNNER_TEMP: ${{ runner.temp }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          CATALOG_PATH="${{ runner.temp }}/${{ inputs.workspace }}.duckdb"
+          CATALOG_PATH="${RUNNER_TEMP}/${WORKSPACE}.duckdb"
+          PREFIX=""
+          [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] && PREFIX="${REPO_OWNER}/${REPO_NAME}/"
+          [ -n "$BRANCH" ] && PREFIX="${PREFIX}${BRANCH}/"
           pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-            cp "s3://${S3_BUCKET}/.catalogs/${{ inputs.workspace }}.duckdb" \
+            cp "s3://${S3_BUCKET}/${PREFIX}.catalogs/${WORKSPACE}.duckdb" \
             "$CATALOG_PATH" 2>/dev/null || echo "No existing catalog found (first run)."
           echo "CATALOG_PATH=$CATALOG_PATH" >> "$GITHUB_ENV"
-
-      - name: Resolve workspace config
-        id: config
-        run: |
-          python3 -c "
-          import tomllib, json
-          with open('workspaces/${{ inputs.workspace }}/pixi.toml', 'rb') as f:
-              m = tomllib.load(f)
-          r = m.get('tool', {}).get('registry', {})
-          schema = r.get('schema', '${{ inputs.workspace }}')
-          mode = r.get('mode', 'append')
-          tables = r.get('tables', r.get('table', ''))
-          if isinstance(tables, str):
-              tables = [tables]
-          print(f'schema={schema}')
-          print(f'mode={mode}')
-          print(f'tables={json.dumps(tables)}')
-          " >> "$GITHUB_OUTPUT"
 
       - name: Run pipeline
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
           CATALOG_PATH: ${{ env.CATALOG_PATH }}
           WORKSPACE_SECRET_API_KEY: ${{ secrets[format('WS_{0}_API_KEY', inputs.workspace)] }}
+          WORKSPACE: ${{ inputs.workspace }}
         run: |
           mkdir -p "$OUTPUT_DIR"
-          pixi run -w ${{ inputs.workspace }} pipeline
+          pixi run -w "$WORKSPACE" pipeline
 
-      - name: Upload output to S3
+      - name: Upload output to all storages
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          S3_WRITE_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
+          S3_WRITE_SECRET: ${{ secrets.S3_WRITE_SECRET }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          WORKSPACE: ${{ inputs.workspace }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
-          OUTPUT_DIR="${{ runner.temp }}/output"
-          SCHEMA="${{ steps.config.outputs.schema }}"
           TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
-
-          if ! ls "$OUTPUT_DIR"/*.parquet 1>/dev/null 2>&1; then
-            echo "No Parquet files found in output directory."
-            exit 1
-          fi
-
-          # Upload each parquet file into a table subdirectory with a
-          # timestamped filename.  This prevents overwriting previous
-          # extractions and lets DuckLake track each file independently.
-          #   s3://bucket/<schema>/<table>/<timestamp>.parquet
-          COUNT=0
-          for f in "$OUTPUT_DIR"/*.parquet; do
-            TABLE=$(basename "$f" .parquet)
-            pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-              cp "$f" "s3://${S3_BUCKET}/${SCHEMA}/${TABLE}/${TIMESTAMP}.parquet"
-            COUNT=$((COUNT + 1))
-            echo "  ${TABLE}/${TIMESTAMP}.parquet"
-          done
-          echo "Uploaded ${COUNT} Parquet file(s)."
-
-      - name: Upload workspace catalog to S3
-        env:
-          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
-        run: |
-          CATALOG_PATH="${{ runner.temp }}/${{ inputs.workspace }}.duckdb"
-          if [ -f "$CATALOG_PATH" ]; then
-            pixi run s5cmd --endpoint-url "$S3_ENDPOINT_URL" \
-              cp "$CATALOG_PATH" \
-              "s3://${S3_BUCKET}/.catalogs/${{ inputs.workspace }}.duckdb"
-            echo "Uploaded workspace catalog."
-          fi
+          CATALOG_PATH="${RUNNER_TEMP}/${WORKSPACE}.duckdb"
+          CATALOG_ARG=""
+          [ -f "$CATALOG_PATH" ] && CATALOG_ARG="--catalog $CATALOG_PATH"
+          uv run .github/scripts/upload_output.py \
+            --workspace "$WORKSPACE" \
+            --output-dir "${RUNNER_TEMP}/output" \
+            --timestamp "$TIMESTAMP" \
+            $CATALOG_ARG
 
       - name: Trigger catalog merge
         if: success()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKSPACE: ${{ inputs.workspace }}
         run: |
           gh workflow run merge-catalog.yml \
-            --field workspace=${{ inputs.workspace }} \
+            --field "workspace=$WORKSPACE" \
             2>/dev/null || echo "merge-catalog.yml not found or dispatch failed."

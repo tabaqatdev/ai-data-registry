@@ -60,48 +60,55 @@ jobs:
 
       # Layer 1: Static analysis (no secrets needed)
       - name: "Layer 1: Static analysis"
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           uv run .github/scripts/validate_manifest.py \
-            workspaces/${{ matrix.workspace }}/pixi.toml
+            "workspaces/$WORKSPACE/pixi.toml"
 
       # Layer 2: Collision detection (no secrets needed)
       - name: "Layer 2: Collision detection"
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           uv run .github/scripts/check_collisions.py \
-            --workspace ${{ matrix.workspace }}
+            --workspace "$WORKSPACE"
 
       # Layer 3: Live catalog check (skips gracefully without S3 secrets)
       - name: "Layer 3: Catalog compatibility"
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           uv run .github/scripts/check_catalog.py \
-            --workspace ${{ matrix.workspace }}
+            --workspace "$WORKSPACE"
 
       # Register workspace so pixi can find it (registrations are machine-local)
       - name: Register workspace
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           pixi workspace register \
-            --name ${{ matrix.workspace }} \
-            --path workspaces/${{ matrix.workspace }}
+            --name "$WORKSPACE" \
+            --path "workspaces/$WORKSPACE"
 
       # Layer 4: Dry run extraction + output validation
       - name: "Layer 4: Dry run"
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           mkdir -p "$OUTPUT_DIR"
-          pixi run -w ${{ matrix.workspace }} dry-run
+          pixi run -w "$WORKSPACE" dry-run
 
       - name: "Layer 4: Validate output"
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
+          WORKSPACE: ${{ matrix.workspace }}
         run: |
           uv run .github/scripts/validate_output.py \
-            workspaces/${{ matrix.workspace }}/pixi.toml \
+            "workspaces/$WORKSPACE/pixi.toml" \
             "$OUTPUT_DIR"
 
   summary:
@@ -111,8 +118,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Report result
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
         run: |
-          if [ "${{ needs.validate.result }}" = "success" ]; then
+          if [ "$VALIDATE_RESULT" = "success" ]; then
             echo "All workspace validations passed."
           else
             echo "One or more workspace validations failed. Check the job logs above."

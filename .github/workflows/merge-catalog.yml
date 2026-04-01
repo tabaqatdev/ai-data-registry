@@ -8,11 +8,20 @@ on:
         required: true
         type: string
         description: "Workspace whose catalog to merge into global"
+      storage:
+        required: false
+        type: string
+        default: ""
+        description: "Specific storage target (empty = all workspace storages)"
   workflow_call:
     inputs:
       workspace:
         required: true
         type: string
+      storage:
+        required: false
+        type: string
+        default: ""
 
 # Serial execution: only one merge at a time, queued (not cancelled)
 concurrency:
@@ -42,8 +51,19 @@ jobs:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_REGION: ${{ secrets.S3_REGION }}
+          S3_WRITE_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
+          S3_WRITE_SECRET: ${{ secrets.S3_WRITE_SECRET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.S3_WRITE_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_WRITE_SECRET }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          WORKSPACE: ${{ inputs.workspace }}
+          STORAGE: ${{ inputs.storage }}
         run: |
+          STORAGE_ARG=""
+          if [ -n "$STORAGE" ]; then
+            STORAGE_ARG="--storage $STORAGE"
+          fi
           uv run .github/scripts/merge_catalog.py \
-            --workspace ${{ inputs.workspace }}
+            --workspace "$WORKSPACE" \
+            $STORAGE_ARG
