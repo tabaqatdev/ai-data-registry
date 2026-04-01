@@ -25,7 +25,7 @@ Weight = max(1, vars/10) * max(1, days/7) * locations.
 ~3,000 cities: weather 18 vars = 5,400 weight, AQ 8 vars = 3,000 weight.
 Total ~8,400/run, daily schedule fits within 10K limit.
 
-Uses POST method for large batches (200 cities/request) to bypass URL limits.
+Uses POST method with 50-city batches and 3s inter-batch delay for rate safety.
 
 All data is CC-BY-4.0 licensed from Open-Meteo (national weather services).
 """
@@ -98,7 +98,7 @@ AQ_VARS = [
     "uv_index",
 ]
 
-BATCH_SIZE = 200
+BATCH_SIZE = 50
 
 
 def setup(db):
@@ -166,6 +166,8 @@ def fetch_json(url, post_data=None, retries=5, delay=2.0):
                 wait = delay * (2 ** attempt)
                 log.warning("Rate limited (429), waiting %.0fs (attempt %d/%d)", wait, attempt + 1, retries)
                 time.sleep(wait)
+                if attempt == retries - 1:
+                    raise
             elif attempt < retries - 1:
                 log.warning("Retry %d/%d after HTTP %d: %s", attempt + 1, retries, e.code, e)
                 time.sleep(delay * (attempt + 1))
@@ -280,6 +282,10 @@ def extract_weather(db, cities):
             log.error("Weather batch %d failed: %s", batch_start, e)
             continue
 
+        if data is None:
+            log.error("Weather batch %d returned no data", batch_start)
+            continue
+
         # API returns list for multi-coordinate, dict for single
         if isinstance(data, dict):
             data = [data]
@@ -344,7 +350,7 @@ def extract_weather(db, cities):
         else:
             log.debug("Weather: %d/%d cities (batch %d/%d)", done, len(cities), batch_num, total_batches)
         if batch_start + BATCH_SIZE < len(cities):
-            time.sleep(0.6)
+            time.sleep(3.0)
 
     h = db.execute("SELECT COUNT(*) FROM weather_hourly").fetchone()[0]
     d = db.execute("SELECT COUNT(*) FROM weather_daily").fetchone()[0]
@@ -370,6 +376,10 @@ def extract_air_quality(db, cities):
             data = fetch_json(AIR_QUALITY_BASE, post_data=post_data)
         except Exception as e:
             log.warning("Air quality batch %d failed (non-critical): %s", batch_start, e)
+            continue
+
+        if data is None:
+            log.warning("Air quality batch %d returned no data", batch_start)
             continue
 
         if isinstance(data, dict):
