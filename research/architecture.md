@@ -943,7 +943,7 @@ The global catalog has `auto_compact = false`. It only gets rebuilt if it become
 | Hetzner Runners (13 workspaces x 30 days x 15 min avg) | CAX11 | ~5 EUR |
 | HF Jobs (2 GPU workspaces x 30 days x 20 min avg) | HF a10g-large | ~30 EUR |
 | Hetzner Object Storage (100 GB) | Hetzner | ~6.49 EUR |
-| SQLite Catalogs | On S3 | $0 |
+| DuckDB Catalogs | On S3 | $0 |
 | **Total** | | **~41 EUR/mo** |
 
 Using free GitHub runners for lightweight workspaces saves ~2 EUR/mo in Hetzner costs per workspace moved. GPU workspaces (HF Jobs) are the most expensive but avoid maintaining GPU infrastructure. Heavy one-shot jobs (DEM conversion, etc.) are handled ad-hoc by the maintainer.
