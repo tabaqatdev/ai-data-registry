@@ -49,6 +49,8 @@ Then validate: `pixi run gpio check all output.parquet`
   ```sql
   SET s3_url_style = 'path';
   ```
+- **DuckLake remote attach requires `CREATE SECRET`**, not `SET s3_*` variables. See `ducklake.md` for full details.
+- `SET s3_*` variables work for direct Parquet reads (`FROM 's3://...'`) but not for `ATTACH 'ducklake:s3://...'`
 - Use `CREATE SECRET` with `PROVIDER credential_chain` for automatic credential discovery
 - For public buckets: `SET s3_access_key_id = ''; SET s3_secret_access_key = '';`
 

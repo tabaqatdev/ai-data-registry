@@ -42,7 +42,37 @@ For ArcGIS REST endpoints, load macros first: `pixi run duckdb -init ".claude/sk
 - `SELECT * FROM arcgis_domains('https://.../FeatureServer/0?f=json')` -- coded value domains
 - `SELECT * FROM arcgis_read('https://.../query?where=1%3D1&outFields=%2A&outSR=4326&returnGeometry=true&f=geojson')` -- features
 
+### DuckLake Remote Catalogs
+
+Query the global or workspace catalogs directly from S3 (no download needed). **Must use `CREATE SECRET`, not `SET s3_*` variables.**
+
+```bash
+pixi run duckdb -c "
+INSTALL ducklake; LOAD ducklake;
+INSTALL httpfs;   LOAD httpfs;
+LOAD spatial;
+SET geometry_always_xy = true;
+
+CREATE SECRET __default_s3 (
+    TYPE S3,
+    KEY_ID getenv('S3_WRITE_KEY_ID'),
+    SECRET getenv('S3_WRITE_SECRET'),
+    ENDPOINT 'fsn1.your-objectstorage.com',
+    REGION 'fsn1',
+    URL_STYLE 'path'
+);
+
+ATTACH 'ducklake:s3://walkthru-earth/catalog.duckdb' AS global (READ_ONLY);
+SHOW ALL TABLES;
+SELECT * FROM ducklake_snapshots('global');
+SELECT COUNT(*) FROM global.\"opensky-flights\".states;
+"
+```
+
+S3 credentials: load from `.env.dev` or environment variables. See `ducklake.md` for full reference.
+
 ### Cross-references
 - **data-quality** agent for deep validation
 - **geoparquet** skill for GeoParquet optimization
 - **duckdb** skill for follow-up SQL queries, ArcGIS macros, and ST_* functions
+- **ducklake.md** reference for remote S3 attach, time travel, and schema evolution

@@ -67,9 +67,12 @@ if '<MARKER>' not in content:
 
 | Provider | Marker | Block to append |
 |----------|--------|-----------------|
-| S3 | `SET s3_region` | `SET s3_region='us-east-1'; SET s3_url_style='path';` + credential_chain |
+| S3 (direct reads) | `SET s3_region` | `SET s3_region='us-east-1'; SET s3_url_style='path';` + credential_chain |
+| S3 (DuckLake) | `CREATE SECRET` | `CREATE SECRET __default_s3 (TYPE S3, KEY_ID '...', SECRET '...', ENDPOINT '...', REGION '...', URL_STYLE 'path');` |
 | GCS | `SET gcs_` | `SET gcs_access_key_id=getenv('GCS_ACCESS_KEY_ID');` |
 | Azure | `LOAD azure;` | `INSTALL azure; LOAD azure; CREATE SECRET azure_secret (TYPE AZURE, CONNECTION_STRING getenv('AZURE_STORAGE_CONNECTION_STRING'));` |
+
+**Important:** DuckLake remote attach (`ATTACH 'ducklake:s3://...'`) requires `CREATE SECRET`. `SET s3_*` variables only work for direct file reads (`FROM 's3://...'`), not for DuckLake catalog access. When in doubt, use `CREATE SECRET` as it covers both cases.
 
 ## Validation
 

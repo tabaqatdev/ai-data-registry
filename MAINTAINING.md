@@ -22,6 +22,8 @@ Full architecture: `research/architecture.md`
 
 Dedup is mandatory. `ducklake_add_data_files` has no built-in duplicate detection. Same file registered twice = duplicate rows.
 
+**Never overwrite a registered file.** `ducklake_add_data_files` caches `file_size_bytes` and `footer_size` at registration time. If a file is later overwritten at the same S3 path (e.g., re-extracted with different data), DuckLake will use stale metadata for range requests, causing HTTP 416 errors. Each extraction must produce a unique filename (e.g., timestamped) or use DuckLake-managed writes (INSERT).
+
 ### Compaction Safety
 
 Global catalog must NOT run compaction. It would DELETE workspace Parquet files and replace them with copies in the global DATA_PATH.
