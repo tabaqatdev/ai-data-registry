@@ -12,7 +12,7 @@ LOAD spatial;
 SELECT function_name, function_type, return_type,
        parameters, parameter_types, description
 FROM duckdb_functions()
-WHERE function_name LIKE 'ST_%'
+WHERE function_name ILIKE 'ST_%'
 ORDER BY function_name, return_type;
 ```
 
@@ -20,8 +20,10 @@ This is the **authoritative source**. It reflects the exact version installed, i
 
 ## Gotchas
 
-- **ST_Transform requires CRS strings**: `ST_Transform(geom, 'EPSG:4326', 'EPSG:3857')`. Both source and target CRS must be specified.
-- **Distance on EPSG:4326 returns degrees**, not meters. Use a projected CRS (e.g., EPSG:3857) or `_Spheroid`/`_Sphere` variants for metric accuracy.
+- **CRS must be VARCHAR, never INTEGER**: `ST_SetCRS(geom, 'EPSG:4326')` works, `ST_SetCRS(geom, 4326)` fails.
+- **ST_Transform requires both source AND target CRS**: `ST_Transform(geom, 'EPSG:4326', 'EPSG:3857')`.
+- **ST_Transform axis order**: DuckDB defaults to CRS-defined axis order (EPSG:4326 = lat,lon). Set `geometry_always_xy = true` before any ST_Transform call for consistent lon,lat (X,Y) order.
+- **Distance on EPSG:4326 returns degrees**, not meters. Use `ST_Distance_Sphere` (haversine, fast) or `ST_Distance_Spheroid` (ellipsoidal, accurate). Both are points-only and expect WGS84 with **latitude, longitude** axis order.
 - **ST_Read vs read_parquet**: Use `ST_Read` for spatial files (GeoJSON, GPKG, Shapefile). Use `read_parquet` for GeoParquet (it preserves geometry natively).
 - **ST_Hilbert** is for spatial sorting/indexing, not the Hilbert curve visualization.
 - **MVT functions** (`ST_AsMVT`, `ST_AsMVTGeom`) require projected coordinates.

@@ -35,12 +35,21 @@ ST_Transform(geom, 'EPSG:4326', 'EPSG:3857')  -- both source AND target required
 ```
 Same rule applies to `arcgis_read(url, crs)` and `arcgis_read_json(url, crs)`.
 
-**ST_Distance on EPSG:4326 returns degrees, not meters.** Project first or use `ST_Distance_Spheroid`:
+**ST_Distance on EPSG:4326 returns degrees, not meters.** Use spheroid/sphere variants:
 ```sql
 -- Degrees (wrong for most use cases):
 ST_Distance(a.geom, b.geom)
--- Meters (correct):
+-- Meters (haversine, fast, points only):
+ST_Distance_Sphere(a.geom, b.geom)
+-- Meters (ellipsoidal, most accurate, points only):
 ST_Distance_Spheroid(a.geom, b.geom)
+```
+Both sphere/spheroid variants expect WGS84 input with **latitude, longitude** axis order.
+
+**ST_Transform axis order warning:** DuckDB currently defaults to CRS-defined axis order
+(EPSG:4326 = lat,lon). Set `geometry_always_xy = true` for consistent lon,lat (X,Y) order:
+```sql
+SET geometry_always_xy = true;  -- use BEFORE any ST_Transform call
 ```
 
 **Grid index coordinate order differs:**
