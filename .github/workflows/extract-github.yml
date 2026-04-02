@@ -34,14 +34,6 @@ jobs:
           cache: true
           cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
-      - name: Register workspace
-        env:
-          WORKSPACE: ${{ inputs.workspace }}
-        run: |
-          pixi workspace register \
-            --name "$WORKSPACE" \
-            --path "workspaces/$WORKSPACE"
-
       - name: Pull workspace catalog from S3 (default storage)
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
@@ -71,7 +63,7 @@ jobs:
           WORKSPACE: ${{ inputs.workspace }}
         run: |
           mkdir -p "$OUTPUT_DIR"
-          pixi run -w "$WORKSPACE" pipeline
+          pixi run --manifest-path "workspaces/$WORKSPACE/pixi.toml" pipeline
 
       - uses: astral-sh/setup-uv@v8.0.0
 

@@ -137,14 +137,6 @@ jobs:
           cache: true
           cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
-      - name: Register workspace
-        env:
-          WORKSPACE: ${{ matrix.workspace }}
-        run: |
-          pixi workspace register \
-            --name "$WORKSPACE" \
-            --path "workspaces/$WORKSPACE"
-
       - name: Run full pipeline
         env:
           OUTPUT_DIR: ${{ runner.temp }}/output
@@ -152,7 +144,7 @@ jobs:
           WORKSPACE: ${{ matrix.workspace }}
         run: |
           mkdir -p "$OUTPUT_DIR"
-          pixi run -w "$WORKSPACE" pipeline
+          pixi run --manifest-path "workspaces/$WORKSPACE/pixi.toml" pipeline
 
       - name: Upload to S3 staging prefix
         env:

@@ -84,15 +84,6 @@ jobs:
           uv run .github/scripts/check_catalog.py \
             --workspace "$WORKSPACE"
 
-      # Register workspace so pixi can find it (registrations are machine-local)
-      - name: Register workspace
-        env:
-          WORKSPACE: ${{ matrix.workspace }}
-        run: |
-          pixi workspace register \
-            --name "$WORKSPACE" \
-            --path "workspaces/$WORKSPACE"
-
       # Layer 4: Dry run extraction + output validation
       - name: "Layer 4: Dry run"
         env:
@@ -100,7 +91,7 @@ jobs:
           WORKSPACE: ${{ matrix.workspace }}
         run: |
           mkdir -p "$OUTPUT_DIR"
-          pixi run -w "$WORKSPACE" dry-run
+          pixi run --manifest-path "workspaces/$WORKSPACE/pixi.toml" dry-run
 
       - name: "Layer 4: Validate output"
         env:
