@@ -109,6 +109,18 @@ dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 - `dry-run` produces sample output for PR validation
 - Chain stops on any non-zero exit
 
+### Output Format: Flat Parquet Only
+
+The registry pipeline expects **flat Parquet files**, one per declared table. Hive-partitioned output (e.g., `country=US/h3_parent=XXX/data_0.parquet`) is **not supported**. The upload script, merge script, and DuckLake catalog all assume `$OUTPUT_DIR/{table_name}.parquet`.
+
+Specifically:
+- `upload_output.py` globs `$OUTPUT_DIR/*.parquet` (flat, single level)
+- `merge_catalog.py` scans `{schema}/{table}/*.parquet` on S3 (flat, single level)
+- DuckLake's `ducklake_add_data_files` does not populate partition metadata for externally-added files ([duckdb/ducklake#579](https://github.com/duckdb/ducklake/issues/579)), so even if files were registered individually, partition pruning would not work
+
+If your data pipeline produces partitioned output, you have two options:
+1. **Flatten it** into one Parquet file per declared table before writing to `$OUTPUT_DIR/`
+2. **Open an issue** to discuss a `layout = "partitioned"` extension to the workspace contract
 ### MUST NOT
 
 1. Write to S3 directly (workflow uploads via s5cmd on your behalf)
