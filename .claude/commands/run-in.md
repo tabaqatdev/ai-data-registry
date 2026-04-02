@@ -8,11 +8,10 @@ Parse the workspace name and task name from: `$ARGUMENTS`
 Run the task in the specified workspace:
 
 ```bash
-pixi run -w $0 $1
+pixi run --manifest-path workspaces/$0/pixi.toml $1
 ```
 
 If the task fails, troubleshoot:
-1. Is the workspace registered? `pixi workspace register list`
-2. Are dependencies installed? `pixi install`
-3. Does the task exist? Check the workspace's `pixi.toml` `[tasks]` section
-4. Is this a shared tool instead? Root-level tools run without `-w`: `pixi run duckdb`, `pixi run gdal`, etc.
+1. Are dependencies installed? `pixi install --manifest-path workspaces/$0/pixi.toml`
+2. Does the task exist? Check the workspace's `pixi.toml` `[tasks]` section
+3. Is this a shared tool instead? Root-level tools run without `--manifest-path`: `pixi run duckdb`, `pixi run gdal`, etc.

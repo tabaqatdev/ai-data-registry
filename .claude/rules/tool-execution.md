@@ -21,4 +21,4 @@ All CLI tools MUST be run through pixi. Never run directly.
 | pnpm | `pixi run pnpm` (NEVER npm/yarn) |
 | s5cmd | `pixi run s5cmd` |
 
-Shared tools from root: `pixi run <tool>`. Workspace tasks: `pixi run -w <workspace> <task>`.
+Shared tools from root: `pixi run <tool>`. Workspace tasks: `pixi run --manifest-path workspaces/<workspace>/pixi.toml <task>`.

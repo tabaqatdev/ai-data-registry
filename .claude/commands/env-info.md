@@ -19,13 +19,13 @@ allowed-tools: Bash(pixi:*)
 !`pixi run node --version 2>/dev/null || echo "Node.js not available"`
 !`pixi run pnpm --version 2>/dev/null || echo "pnpm not available"`
 
-## Registered Workspaces
+## Workspaces
 
-!`pixi workspace register list 2>/dev/null || echo "No workspaces registered"`
+!`ls workspaces/*/pixi.toml 2>/dev/null | sed 's|workspaces/||;s|/pixi.toml||' || echo "No workspaces found"`
 
 ## Dependency Tree
 
 !`pixi tree`
 
-Summarize the environment state: Python version, key package versions (GDAL, DuckDB, gpio), platform, registered workspaces, and any version conflicts.
+Summarize the environment state: Python version, key package versions (GDAL, DuckDB, gpio), platform, discovered workspaces, and any version conflicts.
 For deeper diagnostics, use the **env-check** skill.

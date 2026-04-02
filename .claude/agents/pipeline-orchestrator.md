@@ -48,7 +48,7 @@ dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 - Do NOT hardcode `OUTPUT_DIR` in task `env` (breaks CI override)
 - `pipeline` chains all steps, halts on failure
 - `dry-run` produces sample output for PR validation
-- Runner calls: `pixi run -w {name} pipeline`
+- Runner calls: `pixi run --manifest-path workspaces/{name}/pixi.toml pipeline`
 
 ## Runner Backends
 

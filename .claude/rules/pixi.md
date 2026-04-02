@@ -48,13 +48,19 @@ win-only-tool = ">=1.0"
 
 ## Workspace Commands
 
-**Important:** Workspace registrations are machine-local (stored in `~/.pixi/workspaces.toml`, not in `pixi.toml`). Do NOT add a `members` key to root `pixi.toml`. CI workflows register workspaces explicitly.
+Each workspace under `workspaces/` is a standalone pixi project with its own `pixi.toml` and committed `pixi.lock`. No registration needed.
 
 ```bash
-pixi workspace register --name <name> --path workspaces/<name>  # Register sub-workspace
-pixi workspace register list                                     # List all registered
-pixi workspace register remove <name>                            # Unregister
-pixi workspace register prune                                    # Clean stale entries
+# Run a workspace task from repo root
+pixi run --manifest-path workspaces/<name>/pixi.toml <task>
+
+# Or cd into workspace and run directly
+cd workspaces/<name> && pixi run <task>
+
+# Add dependencies (from workspace directory)
+cd workspaces/<name>
+pixi add <pkg>              # conda-forge
+pixi add --pypi <pkg>       # PyPI fallback
 ```
 
 ## Running Tools

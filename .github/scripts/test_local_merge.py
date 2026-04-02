@@ -42,7 +42,7 @@ def main():
     global_catalog = os.path.join(tmpdir, "catalog.duckdb")
     errors = 0
 
-    # ── Step 1: Extract test data (simulates pixi run -w test-minimal pipeline)
+    # ── Step 1: Extract test data (simulates pixi run --manifest-path workspaces/test-minimal/pixi.toml pipeline)
     step("Step 1: Generate test Parquet files (batch 1)")
 
     con = duckdb.connect()

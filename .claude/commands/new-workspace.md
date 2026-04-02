@@ -24,24 +24,23 @@ pixi init . --channel conda-forge --platform osx-arm64 --platform linux-64 --pla
 cd ../..
 ```
 
-3. **Register in root workspace**
+3. **Add the language runtime** (from within the workspace directory)
 ```bash
-pixi workspace register --name $0 --path workspaces/$0
+cd workspaces/$0
+```
+   - python: `pixi add python`
+   - go: `pixi add go`
+   - node: `pixi add nodejs`
+   - rust: `pixi add rust`
+
+4. **Add workspace-specific dependencies** (ask the user what they need)
+```bash
+pixi add <dep1> <dep2>
+pixi add --pypi <pypi-dep>   # only when not on conda-forge
+cd ../..
 ```
 
-4. **Add the language runtime** (using -w flag from root)
-   - python: `pixi add -w $0 python`
-   - go: `pixi add -w $0 go`
-   - node: `pixi add -w $0 nodejs`
-   - rust: `pixi add -w $0 rust`
-
-5. **Add workspace-specific dependencies** (ask the user what they need)
-```bash
-pixi add -w $0 <dep1> <dep2>
-pixi add -w $0 --pypi <pypi-dep>   # only when not on conda-forge
-```
-
-6. **Ask the user for registry metadata:**
+5. **Ask the user for registry metadata:**
    - What does this workspace extract? (description)
    - What schedule? (cron expression, e.g., `0 6 * * *` for daily)
    - What compute backend? (`github` for lightweight, `hetzner` for medium, `huggingface` for GPU)
@@ -51,7 +50,7 @@ pixi add -w $0 --pypi <pypi-dep>   # only when not on conda-forge
    - Schema name? (= S3 prefix, must be unique across all workspaces)
    - Table name(s)? (single string for one table, or list for multiple outputs)
 
-7. **Generate the full pixi.toml** with `[tool.registry]` contract:
+6. **Generate the full pixi.toml** with `[tool.registry]` contract:
 
 For a single-table workspace:
 ```toml
@@ -105,12 +104,7 @@ optional = true        # don't fail if file is missing
 
 Each table name must match `^[a-z][a-z0-9_]*$` and corresponds to a `<table_name>.parquet` file in `$OUTPUT_DIR/`.
 
-8. **Delete the workspace-level pixi.lock** (root lock covers all):
-```bash
-rm workspaces/$0/pixi.lock
-```
-
-9. **Generate required tasks** based on language.
+7. **Generate required tasks** based on language.
 
 **IMPORTANT:** Do NOT hardcode `OUTPUT_DIR` in task `env`. CI passes its own `$OUTPUT_DIR` via the shell environment. Hardcoding it in pixi task `env` would override the CI value. The extract script should default to `output/` when `$OUTPUT_DIR` is not set.
 
@@ -141,12 +135,12 @@ pipeline = { depends-on = ["extract", "validate"] }
 dry-run = { cmd = "go run ./cmd/extract", env = { DRY_RUN = "1" } }
 ```
 
-10. **Create scaffold files** based on language. Use `workspaces/test-minimal/` as a reference:
+8. **Create scaffold files** based on language. Use `workspaces/test-minimal/` as a reference:
    - `extract.py` (or .js/.go) - reads `$OUTPUT_DIR` (defaults to `output/`), reads `$DRY_RUN`, writes one `<table_name>.parquet` per declared table
    - `validate_local.py` - validates extracted output locally (row count, basic checks)
-   - No `.gitignore` needed (root `.gitignore` covers `**/output/` and workspace `pixi.lock`)
+   - No `.gitignore` needed (root `.gitignore` covers `**/output/`)
 
-11. **Show the final pixi.toml for review** and verify:
+9. **Show the final pixi.toml for review** and verify:
     - All 4 required tasks present (extract, validate, pipeline, dry-run)
     - `[tool.registry]` complete with runner, license, checks
     - Schema name unique (check other workspaces)
@@ -154,7 +148,7 @@ dry-run = { cmd = "go run ./cmd/extract", env = { DRY_RUN = "1" } }
 ## Notes
 - Shared tools (DuckDB, GDAL, gpio, s5cmd, pnpm) are available from root, no need to add per workspace
 - Workspaces live in `workspaces/` directory
-- Run workspace tasks from root: `pixi run -w $0 <task>`
+- Run workspace tasks from root: `pixi run --manifest-path workspaces/$0/pixi.toml <task>`
 - Workspace code MUST write to `$OUTPUT_DIR/`, never directly to S3
 - The workflow uploads via s5cmd on the workspace's behalf
 - Full contract details: `.claude/rules/workspace-contract.md`
