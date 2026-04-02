@@ -1,29 +1,36 @@
 name: Merge Catalog
-run-name: "Merge Catalog: ${{ inputs.workspace }}"
+run-name: "Merge Catalog${{ inputs.workspace && format(': {0}', inputs.workspace) || ': all pending' }}"
 
 on:
+  # Trigger immediately when any extract workflow completes successfully
+  workflow_run:
+    workflows:
+      - "Extract (GitHub Runner)"
+      - "Extract (Hetzner Runner)"
+      - "Extract (HuggingFace Jobs)"
+    types: [completed]
+
+  # Backstop: catch any merges dropped by the concurrency group's 1-pending limit
+  schedule:
+    - cron: '*/10 * * * *'
+
+  # Manual trigger for debugging or single-workspace merge
   workflow_dispatch:
     inputs:
       workspace:
-        required: true
+        required: false
         type: string
-        description: "Workspace whose catalog to merge into global"
+        default: ""
+        description: "Workspace to merge (empty = all pending workspaces)"
       storage:
         required: false
         type: string
         default: ""
         description: "Specific storage target (empty = all workspace storages)"
-  workflow_call:
-    inputs:
-      workspace:
-        required: true
-        type: string
-      storage:
-        required: false
-        type: string
-        default: ""
 
-# Serial execution: only one merge at a time, queued (not cancelled)
+# Serial execution: only one merge at a time, queued (not cancelled).
+# GitHub allows 1 running + 1 pending. The --all mode ensures each run
+# merges ALL pending workspaces, so dropped runs lose no data.
 concurrency:
   group: catalog-merge
   cancel-in-progress: false
@@ -33,9 +40,13 @@ permissions:
 
 jobs:
   merge:
-    name: "Merge: ${{ inputs.workspace }}"
+    name: "Merge${{ inputs.workspace && format(': {0}', inputs.workspace) || ': all' }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Skip workflow_run triggers from failed/cancelled extracts
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +57,7 @@ jobs:
           cache: true
           cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
-      - name: Merge workspace catalog into global
+      - name: Merge catalogs
         env:
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -64,6 +75,12 @@ jobs:
           if [ -n "$STORAGE" ]; then
             STORAGE_ARG="--storage $STORAGE"
           fi
-          uv run .github/scripts/merge_catalog.py \
-            --workspace "$WORKSPACE" \
-            $STORAGE_ARG
+          if [ -n "$WORKSPACE" ]; then
+            uv run .github/scripts/merge_catalog.py \
+              --workspace "$WORKSPACE" \
+              $STORAGE_ARG
+          else
+            uv run .github/scripts/merge_catalog.py \
+              --all \
+              $STORAGE_ARG
+          fi

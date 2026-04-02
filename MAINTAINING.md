@@ -141,7 +141,7 @@ storage = ["eu-hetzner", "us-east"]     # replicate to multiple storages
 | `extract-github.yml` | Scheduler dispatch or `workflow_dispatch` | Runs workspace on free GitHub runner |
 | `extract-hetzner.yml` | Scheduler dispatch or `workflow_dispatch` | Create-run-delete ephemeral Hetzner ARM server |
 | `extract-huggingface.yml` | Scheduler dispatch or `workflow_dispatch` | Submit to HF Jobs API (GPU/Docker) |
-| `merge-catalog.yml` | Post-extraction success or `workflow_dispatch` | Serial merge of workspace catalogs into global |
+| `merge-catalog.yml` | `workflow_run` (extract success) + cron (every 10 min) + `workflow_dispatch` | Merges all pending workspace catalogs into global (`--all` mode) |
 | `scheduler.yml` | Cron (every 15 min) or `workflow_dispatch` | Reads schedules, dispatches due workspaces by backend |
 | `maintenance.yml` | Cron (Sunday 3 AM UTC) or `workflow_dispatch` | Weekly CHECKPOINT on workspace catalogs |
 | `build-image.yml` | Push to main with Dockerfile changes | Build + push Docker image to GHCR for HF workspaces |
@@ -163,7 +163,7 @@ uv run .github/scripts/<script>.py
 | `check_catalog.py` | Layer 3: downloads global catalog from S3, checks table existence and schema compatibility. Gracefully skips when S3 creds unavailable (fork PRs) | `pr-validate.yml` |
 | `validate_output.py` | Layer 4: validates Parquet output (min rows, max null pct, unique cols, gpio geometry check) | `pr-validate.yml`, `pr-extract.yml` |
 | `upload_output.py` | Consolidated upload script: reads workspace storage targets, uploads parquet files to all declared storages with owner/repo/branch prefix via s5cmd. Replaces inline upload shell code in extract workflows | `extract-github.yml`, `extract-hetzner.yml` |
-| `merge_catalog.py` | Two-phase merge per storage target: (1) scans S3 for unregistered files per table, syncs workspace catalog; (2) diffs workspace vs global, registers new files. Supports `--storage` flag for single-storage merge. Sets `auto_compact = false` on global | `merge-catalog.yml` |
+| `merge_catalog.py` | Two-phase merge per storage target: (1) scans S3 for unregistered files per table, syncs workspace catalog; (2) diffs workspace vs global, registers new files. `--all` mode discovers all workspaces, groups by storage, downloads/uploads global catalog once per storage. `--workspace` mode for single workspace. `--storage` flag for single-storage merge. Sets `auto_compact = false` on global | `merge-catalog.yml` |
 | `find_due.py` | Evaluates workspace cron schedules against state file (workflow artifact), dispatches backend workflows. Builds per-backend inputs (workspace, server_type/flavor/image). `--dry-run` and `--state-file` flags | `scheduler.yml` |
 | `maintenance.py` | Lists all workspace catalogs from S3, runs CHECKPOINT with `expire_older_than = 30 days`, `delete_older_than = 7 days`, cleans orphaned files. `--dry-run` flag | `maintenance.yml` |
 | `submit_hf_job.py` | Submits container job to HF Jobs API via `huggingface_hub.run_job()`, passes S3 creds + workspace secrets, polls status every 30s (max 2h timeout) | `extract-huggingface.yml` |
@@ -199,7 +199,8 @@ gh run view <run-id> --log-failed
 gh workflow run pr-extract.yml --field pr_number=1 --field workspace=my-workspace
 gh workflow run pr-cleanup.yml --field pr_number=1
 gh workflow run extract-github.yml --field workspace=my-workspace
-gh workflow run merge-catalog.yml --field workspace=my-workspace
+gh workflow run merge-catalog.yml                                # merge all pending
+gh workflow run merge-catalog.yml --field workspace=my-workspace  # merge single workspace
 gh workflow run maintenance.yml   # manual maintenance run
 ```
 
@@ -257,13 +258,17 @@ See `docs/secrets-setup.md` for the full list with setup instructions.
 
 Scheduler runs every 15 minutes on free GitHub runner. Reads `[tool.registry].schedule` from every workspace pixi.toml, compares against state file (workflow artifact, 90-day retention), dispatches runners for due workspaces.
 
-| Frequency | Merge strategy |
-|-----------|---------------|
-| < 1 hour | Merge immediately after each extraction |
-| Daily | Batch all daily jobs, single merge when done |
-| Weekly/monthly | Merge immediately (rare, no batching benefit) |
+### Merge Trigger Model
 
-All merge jobs share `concurrency: catalog-merge` so they never overlap.
+Extract workflows do NOT dispatch merges directly. Instead, `merge-catalog.yml` has dual triggers:
+
+1. **`workflow_run`**: fires automatically when any extract workflow completes successfully. Runs `--all` to merge every workspace with pending data.
+2. **Cron backstop** (every 10 min): catches any merges dropped by the concurrency group's 1-pending limit. Idempotent, exits fast when nothing is pending.
+3. **`workflow_dispatch`**: manual trigger. Pass `--workspace` for a single workspace, or leave empty for `--all`.
+
+The `--all` mode groups workspaces by storage target, downloads the global catalog once per storage, merges all pending workspaces, then uploads once. This avoids redundant S3 round-trips when multiple extracts finish close together.
+
+All merge runs share `concurrency: catalog-merge` so they never overlap. GitHub allows 1 running + 1 pending per concurrency group. Since each run merges ALL pending workspaces, dropped pending runs do not lose data.
 
 ## DuckDB Runtime Files
 
@@ -291,5 +296,5 @@ All merge jobs share `concurrency: catalog-merge` so they never overlap.
 - gpio: install via `pixi add --pypi geoparquet-io --pre` (PyPI beta)
 - `pixi workspace register` is machine-local. CI must register explicitly
 - Do NOT add `members` to `[workspace]` in root `pixi.toml` (not valid in pixi v0.66.0)
-- All extract workflows trigger `merge-catalog.yml` on success
+- `merge-catalog.yml` triggers automatically via `workflow_run` when any extract completes
 - `build-image.yml` triggers on Dockerfile changes pushed to main

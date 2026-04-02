@@ -8,6 +8,7 @@
 
 Usage:
     uv run merge_catalog.py --workspace <name> [--catalog-dir <path>] [--storage <name>]
+    uv run merge_catalog.py --all [--catalog-dir <path>] [--storage <name>]
 
 For each table declared in the workspace pixi.toml:
   1. Scans S3 for Parquet files under s3://bucket/{owner}/{repo}/{branch}/{schema}/{table}/
@@ -15,10 +16,19 @@ For each table declared in the workspace pixi.toml:
   3. Diffs the workspace catalog against the global catalog
   4. Registers only NEW files in the global catalog (zero-copy)
 
+Modes:
+  --workspace <name>  Merge a single workspace (backward compatible)
+  --all               Discover all workspaces, group by storage target, merge all
+                      pending. Downloads/uploads the global catalog once per storage
+                      instead of once per workspace. Idempotent: exits fast when
+                      nothing is pending.
+
 Supports multi-storage: runs merge independently for each target storage.
 Pass --storage to merge a specific storage, or omit to merge all workspace storages.
 
-Runs with concurrency: 1 to prevent concurrent writes to the global catalog.
+Triggered by workflow_run (after any extract completes) and a 10-minute cron
+backstop. The concurrency group serializes runs so only one merge executes at
+a time.
 
 CRITICAL: Catalog files use the DuckDB backend (.duckdb), NOT SQLite (.ducklake).
 DuckDB catalogs support remote S3/HTTPS read-only access via httpfs, enabling
@@ -43,6 +53,7 @@ from scripts.registry_config import (
     build_catalog_path,
     build_global_catalog_path,
     build_s3_root,
+    discover_workspaces,
     get_tables,
     get_workspace_storages,
     load_storage_configs,
@@ -242,8 +253,22 @@ def merge_workspace_storage(
     schema: str,
     tables: list[str],
     catalog_dir: str,
-) -> bool:
-    """Merge a workspace's catalog for a single storage target."""
+    *,
+    global_catalog_local: str | None = None,
+    skip_global_upload: bool = False,
+) -> tuple[bool, bool]:
+    """Merge a workspace's catalog for a single storage target.
+
+    Args:
+        global_catalog_local: Pre-downloaded global catalog path. If provided,
+            skips downloading the global catalog (used by --all mode to share
+            one global catalog file across workspaces).
+        skip_global_upload: If True, skip uploading the global catalog after
+            merge (caller handles upload in --all mode).
+
+    Returns:
+        (success, global_changed) tuple.
+    """
     print(f"\n=== Storage: {storage_name} ===")
 
     # S3 paths using path builders
@@ -255,14 +280,14 @@ def merge_workspace_storage(
     storage_catalog_dir = os.path.join(catalog_dir, storage_name)
     os.makedirs(storage_catalog_dir, exist_ok=True)
     ws_catalog_local = os.path.join(storage_catalog_dir, f"{workspace}.duckdb")
-    global_catalog_local = os.path.join(storage_catalog_dir, "catalog.duckdb")
+    _global_catalog_local = global_catalog_local or os.path.join(storage_catalog_dir, "catalog.duckdb")
 
     # Setup DuckDB
     try:
         import duckdb
     except ImportError:
         print("  ERROR: duckdb Python package not available.")
-        return False
+        return False, False
 
     con = duckdb.connect()
     con.execute("INSTALL ducklake; LOAD ducklake;")
@@ -270,14 +295,16 @@ def merge_workspace_storage(
 
     create_s3_secret(con, storage_name)
 
-    # Download catalogs
+    # Download workspace catalog
     print(f"Downloading workspace catalog: {ws_catalog_s3}")
     if not download_catalog(storage_name, ws_catalog_s3, ws_catalog_local):
         print(f"  INFO: No workspace catalog found. Will create a new one.")
 
-    print(f"Downloading global catalog: {global_catalog_s3}")
-    if not download_catalog(storage_name, global_catalog_s3, global_catalog_local):
-        print(f"  INFO: No global catalog found. Will create a new one.")
+    # Download global catalog (skip if caller provided a pre-downloaded one)
+    if global_catalog_local is None:
+        print(f"Downloading global catalog: {global_catalog_s3}")
+        if not download_catalog(storage_name, global_catalog_s3, _global_catalog_local):
+            print(f"  INFO: No global catalog found. Will create a new one.")
 
     # -- Phase 1: Sync workspace catalog --
     # Attach workspace catalog READ_WRITE so we can register new S3 files.
@@ -290,7 +317,7 @@ def merge_workspace_storage(
     except duckdb.Error as e:
         print(f"  ERROR: Failed to attach workspace catalog: {e}")
         con.close()
-        return False
+        return False, False
 
     ws_changed = False
     for table in tables:
@@ -314,14 +341,14 @@ def merge_workspace_storage(
     # -- Phase 2: Merge to global catalog --
     try:
         con.execute(f"""
-            ATTACH {quote_literal('ducklake:' + global_catalog_local)} AS global_cat (
+            ATTACH {quote_literal('ducklake:' + _global_catalog_local)} AS global_cat (
                 DATA_PATH {quote_literal(data_path)}
             )
         """)
     except duckdb.Error as e:
         print(f"  ERROR: Failed to attach global catalog: {e}")
         con.close()
-        return False
+        return False, False
 
     # Disable auto_compact on global catalog to prevent file deletion
     try:
@@ -337,17 +364,19 @@ def merge_workspace_storage(
 
     con.close()
 
-    # Upload global catalog if it changed
-    if global_changed:
+    # Upload global catalog if it changed (unless caller handles upload)
+    if global_changed and not skip_global_upload:
         print(f"Uploading global catalog: {global_catalog_s3}")
-        if not upload_catalog(storage_name, global_catalog_local, global_catalog_s3):
+        if not upload_catalog(storage_name, _global_catalog_local, global_catalog_s3):
             print(f"  ERROR: Failed to upload global catalog.")
-            return False
+            return False, global_changed
         print(f"  Merge complete for workspace '{workspace}' on storage '{storage_name}'.")
+    elif global_changed:
+        print(f"  Workspace '{workspace}' merged to global (upload deferred).")
     else:
         print(f"  No changes to global catalog for workspace '{workspace}' on storage '{storage_name}'.")
 
-    return True
+    return True, global_changed
 
 
 def merge_workspace(workspace: str, catalog_dir: str, storage_name: str | None = None) -> bool:
@@ -375,31 +404,115 @@ def merge_workspace(workspace: str, catalog_dir: str, storage_name: str | None =
 
     all_ok = True
     for sn in storage_names:
-        ok = merge_workspace_storage(workspace, sn, schema, tables, catalog_dir)
+        ok, _changed = merge_workspace_storage(workspace, sn, schema, tables, catalog_dir)
         if not ok:
             all_ok = False
 
     return all_ok
 
 
+def merge_all_workspaces(catalog_dir: str, storage_filter: str | None = None) -> bool:
+    """Merge all workspaces, grouped by storage for efficiency.
+
+    Downloads the global catalog once per storage target instead of once per
+    workspace. Idempotent: workspaces with no pending files are skipped quickly.
+    """
+    workspaces = discover_workspaces()
+
+    # Group workspaces by storage target
+    storage_groups: dict[str, list[tuple[str, str, list[str]]]] = {}
+    for ws in workspaces:
+        if not ws["registry"]:
+            continue
+        registry = ws["registry"]
+        schema = registry.get("schema", ws["name"])
+        tables = get_tables(registry)
+        if not tables:
+            continue
+        try:
+            storages = get_workspace_storages(registry)
+        except (ValueError, KeyError) as e:
+            print(f"WARNING: Skipping workspace '{ws['name']}': {e}")
+            continue
+        for sn in storages:
+            if storage_filter and sn != storage_filter:
+                continue
+            storage_groups.setdefault(sn, []).append((ws["name"], schema, tables))
+
+    if not storage_groups:
+        print("No workspaces to merge.")
+        return True
+
+    total_workspaces = sum(len(ws_list) for ws_list in storage_groups.values())
+    print(f"Merging {total_workspaces} workspace(s) across {len(storage_groups)} storage(s)...")
+
+    all_ok = True
+    for storage_name, ws_list in storage_groups.items():
+        print(f"\n{'=' * 60}")
+        print(f"Storage: {storage_name} ({len(ws_list)} workspace(s))")
+        print(f"{'=' * 60}")
+
+        # Download global catalog ONCE for this storage
+        storage_catalog_dir = os.path.join(catalog_dir, storage_name)
+        os.makedirs(storage_catalog_dir, exist_ok=True)
+        global_catalog_local = os.path.join(storage_catalog_dir, "catalog.duckdb")
+        global_catalog_s3 = build_global_catalog_path(storage_name)
+
+        print(f"Downloading global catalog: {global_catalog_s3}")
+        if not download_catalog(storage_name, global_catalog_s3, global_catalog_local):
+            print(f"  INFO: No global catalog found. Will create a new one.")
+
+        any_global_changed = False
+        for ws_name, schema, tables in ws_list:
+            print(f"\n--- Workspace: {ws_name} ---")
+            ok, global_changed = merge_workspace_storage(
+                ws_name, storage_name, schema, tables, catalog_dir,
+                global_catalog_local=global_catalog_local,
+                skip_global_upload=True,
+            )
+            if not ok:
+                all_ok = False
+            if global_changed:
+                any_global_changed = True
+
+        # Upload global catalog ONCE for this storage
+        if any_global_changed:
+            print(f"\nUploading global catalog: {global_catalog_s3}")
+            if not upload_catalog(storage_name, global_catalog_local, global_catalog_s3):
+                print(f"  ERROR: Failed to upload global catalog for storage '{storage_name}'.")
+                all_ok = False
+            else:
+                print(f"  Global catalog updated for storage '{storage_name}'.")
+        else:
+            print(f"\n  No changes to global catalog for storage '{storage_name}'.")
+
+    return all_ok
+
+
 def main():
     parser = argparse.ArgumentParser(description="Merge workspace catalog into global catalog")
-    parser.add_argument("--workspace", required=True, help="Workspace name to merge")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--workspace", help="Workspace name to merge")
+    group.add_argument("--all", action="store_true", dest="merge_all", help="Merge all workspaces (grouped by storage)")
     parser.add_argument("--catalog-dir", help="Directory for catalog files (default: temp dir)")
     parser.add_argument("--storage", default=None, help="Specific storage target (default: all workspace storages)")
     args = parser.parse_args()
 
-    if not WORKSPACE_NAME_RE.match(args.workspace):
+    if args.workspace and not WORKSPACE_NAME_RE.match(args.workspace):
         print(f"ERROR: Invalid workspace name: {args.workspace}")
         sys.exit(1)
 
+    def run(catalog_dir: str) -> bool:
+        if args.merge_all:
+            return merge_all_workspaces(catalog_dir, args.storage)
+        return merge_workspace(args.workspace, catalog_dir, args.storage)
+
     if args.catalog_dir:
-        catalog_dir = args.catalog_dir
-        os.makedirs(catalog_dir, exist_ok=True)
-        success = merge_workspace(args.workspace, catalog_dir, args.storage)
+        os.makedirs(args.catalog_dir, exist_ok=True)
+        success = run(args.catalog_dir)
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
-            success = merge_workspace(args.workspace, tmpdir, args.storage)
+            success = run(tmpdir)
 
     if not success:
         sys.exit(1)

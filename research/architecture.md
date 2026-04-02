@@ -52,8 +52,8 @@ graph TB
 
     GH & HZ & HF -->|"Parquet"| S3
     GH & HZ & HF -->|"catalog"| CATS
-    GH & HZ & HF -->|"done"| MQ
-    MQ -->|"diff + add_data_files()"| GLOBAL
+    GH & HZ & HF -->|"workflow_run"| MQ
+    MQ -->|"--all: diff + add_data_files()"| GLOBAL
 ```
 
 ---
@@ -72,44 +72,50 @@ The workspace catalog is the workspace's ground truth. It has its own snapshots,
 
 ### 2. Global Catalog Merge (Free GitHub Runner, serial)
 
-A single merge job with `concurrency: 1` runs two phases per workspace:
+Merge is triggered by `workflow_run` (fires when any extract workflow completes successfully) and a 10-minute cron backstop. Each merge run uses `--all` mode: discovers all workspaces, groups by storage, and merges everything pending in a single run.
+
+The `concurrency: catalog-merge` group serializes runs (1 running + 1 pending). Since each run merges ALL pending workspaces, dropped pending runs do not lose data.
+
+**Per storage target, the merge downloads the global catalog once, then for each workspace:**
 
 **Phase 1 - Sync workspace catalog:**
 1. Downloads the workspace catalog from S3 (or creates a new one)
 2. For each table in `[tool.registry].tables`, scans S3 for Parquet files under `s3://bucket/{owner}/{repo}/{branch}/{schema}/{table}/*.parquet`
 3. Registers any files not yet tracked in the workspace catalog
+4. Uploads workspace catalog if changed
 
 **Phase 2 - Merge to global:**
-1. Downloads the global catalog from S3 (or creates a new one)
-2. For each table, diffs `ducklake_list_files()` between workspace and global
-3. Registers only NEW files in the global catalog via `ducklake_add_data_files()` (zero-copy)
-4. Uploads both catalogs back to S3
+1. Diffs `ducklake_list_files()` between workspace and global
+2. Registers only NEW files in the global catalog via `ducklake_add_data_files()` (zero-copy)
+
+**After all workspaces are processed, uploads the global catalog once.**
 
 ```mermaid
 sequenceDiagram
     participant S3 as Hetzner S3
-    participant MQ as Merge Queue<br/>(concurrency: 1)
+    participant MQ as Merge Queue<br/>(--all mode)
 
-    MQ->>S3: Pull catalog.duckdb
+    MQ->>S3: Pull catalog.duckdb (once)
+
+    Note over MQ: For each workspace:
+
     MQ->>S3: Pull weather.duckdb
-    MQ->>S3: Pull census.duckdb
-
-    Note over MQ: Attach global READ_WRITE<br/>Attach workspaces READ_ONLY
-
     MQ->>MQ: Diff weather files:<br/>ws has 5 files, global has 3<br/>= 2 new files to register
-
     MQ->>MQ: ducklake_add_data_files()<br/>for 2 new weather files<br/>(zero-copy, S3 paths only)
 
+    MQ->>S3: Pull census.duckdb
     MQ->>MQ: Diff census files:<br/>ws has 2 files, global has 2<br/>= 0 new files, skip
 
-    MQ->>S3: Push updated catalog.duckdb
+    MQ->>S3: Push updated catalog.duckdb (once)
 ```
 
 ### Why This Works
 
 - **No concurrent writes**: Only the merge queue writes to the global catalog, with `concurrency: 1`
+- **No data loss**: `--all` mode merges every pending workspace in each run. The 1-pending concurrency limit cannot drop data because the surviving run picks up all pending work
 - **Zero-copy**: Global catalog stores pointers to workspace Parquet files. No data duplication.
 - **Incremental**: File list diff ensures only new files are registered. No duplicates.
+- **Efficient**: Global catalog downloaded/uploaded once per storage, not once per workspace
 - **Crash-safe**: If a workspace extraction fails, its catalog is unchanged and nothing enters global
 - **No catalog in git**: All catalogs live on S3. Pulled at runtime, pushed after mutation.
 - **No PostgreSQL**: DuckDB backend is fine because only one process writes to each catalog at a time
@@ -370,13 +376,17 @@ The scheduler runs on a free GitHub runner via cron. It reads `[tool.registry].s
 | Weekly | `0 0 * * 1` | Aggregations |
 | Monthly | `0 0 1 * *` | Census, reports |
 
-### Merge Timing
+### Merge Trigger Model
 
-- **High-frequency** (< 1 hour): merge immediately after each extraction
-- **Daily**: batch all daily jobs, single merge when batch completes
-- **Weekly/monthly**: merge immediately (rare jobs, no batching benefit)
+Extract workflows do not dispatch merges directly. Instead, `merge-catalog.yml` uses dual triggers:
 
-All merge jobs share `concurrency: catalog-merge` so they never overlap.
+1. **`workflow_run`**: fires when any extract workflow (`Extract (GitHub Runner)`, `Extract (Hetzner Runner)`, `Extract (HuggingFace Jobs)`) completes successfully. Runs `--all` to merge every workspace with pending data.
+2. **Cron backstop** (every 10 min): catches any merges dropped by the concurrency group's 1-pending limit. Idempotent, exits fast when nothing is pending.
+3. **`workflow_dispatch`**: manual trigger. Pass `workspace` for a single workspace, or leave empty for `--all`.
+
+The `--all` mode groups workspaces by storage target, downloads the global catalog once per storage, merges all pending workspaces sequentially, then uploads once. Data is available within minutes of extraction completing.
+
+All merge runs share `concurrency: catalog-merge` so they never overlap. Since each run merges ALL pending workspaces, dropped pending runs do not lose data.
 
 ---
 
@@ -903,7 +913,7 @@ ai-data-registry/
             extract-hetzner.yml      # Backend: ephemeral Hetzner (create -> run -> delete)
             extract-huggingface.yml  # Backend: HF Jobs API (GPU, Docker image)
             build-image.yml          # Build + push Docker images for HF workspaces
-            merge-catalog.yml        # Serial catalog merge (concurrency: 1)
+            merge-catalog.yml        # Merge all pending (workflow_run + cron backstop)
             pr-validate.yml          # 4-layer PR validation (dry-run on free runner)
             pr-extract.yml           # Maintainer-triggered full extraction on PR (staging)
             pr-cleanup.yml           # Auto-cleanup staging data on PR close/merge

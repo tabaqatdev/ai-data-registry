@@ -20,7 +20,6 @@ concurrency:
 
 permissions:
   contents: read
-  actions: write
 
 jobs:
   extract:
@@ -97,13 +96,3 @@ jobs:
             --output-dir "${RUNNER_TEMP}/output" \
             --timestamp "$TIMESTAMP" \
             $CATALOG_ARG
-
-      - name: Trigger catalog merge
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WORKSPACE: ${{ inputs.workspace }}
-        run: |
-          gh workflow run merge-catalog.yml \
-            --field "workspace=$WORKSPACE" \
-            2>/dev/null || echo "merge-catalog.yml not found or dispatch failed."

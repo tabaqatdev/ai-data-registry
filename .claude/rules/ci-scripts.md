@@ -47,8 +47,8 @@ Each script declares its own dependencies inline (PEP 723 `# /// script` block).
 
 ## Key Workflow Patterns
 
-- All extract workflows trigger `merge-catalog.yml` on success
-- `concurrency: catalog-merge` serializes global catalog writes
+- `merge-catalog.yml` triggers via `workflow_run` when any extract completes, plus a 10-min cron backstop. Runs `--all` to merge every pending workspace
+- `concurrency: catalog-merge` serializes global catalog writes (1 running + 1 pending, safe because `--all` merges everything)
 - `concurrency: extract-{workspace}` prevents parallel extractions
 - Hetzner: three-job pattern (create, work, delete always)
 - HF: container writes directly to S3 (no workflow upload step)
