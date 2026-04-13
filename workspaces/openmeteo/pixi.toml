@@ -24,7 +24,7 @@ timeout = 30
 tags = ["weather", "climate", "air-quality", "forecast", "global", "open-meteo", "temperature", "precipitation"]
 schema = "openmeteo"
 tables = ["weather_hourly", "weather_daily", "air_quality"]
-mode = "replace"
+mode = "append"
 
 [tool.registry.runner]
 backend = "github"
@@ -43,16 +43,16 @@ schema_match = true
 min_rows = 1000
 max_null_pct = 15
 geometry = true
-unique_cols = ["city", "country_code", "latitude", "longitude", "time"]
+unique_cols = ["city", "country_code", "latitude", "longitude", "time", "snapshot_time"]
 
 [tool.registry.checks.weather_daily]
 min_rows = 100
 max_null_pct = 10
 geometry = true
-unique_cols = ["city", "country_code", "latitude", "longitude", "date"]
+unique_cols = ["city", "country_code", "latitude", "longitude", "date", "snapshot_time"]
 
 [tool.registry.checks.air_quality]
 min_rows = 200
 max_null_pct = 25
 geometry = true
-unique_cols = ["city", "country_code", "latitude", "longitude", "time"]
+unique_cols = ["city", "country_code", "latitude", "longitude", "time", "snapshot_time"]
