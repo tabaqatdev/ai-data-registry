@@ -23,6 +23,10 @@ __pycache__/
 # Workspace local output (CI uses $OUTPUT_DIR from runner.temp)
 **/output/
 
+# QuackOSM work directory (PBF downloads + intermediate cache). Re-populated
+# per CI run; persisting across runs is not safe (stale hashes, huge footprint).
+workspaces/infra-osm/files/
+
 # Data and Secrets
 data/
 .env
