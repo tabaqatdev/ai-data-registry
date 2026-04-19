@@ -1,0 +1,50 @@
+[workspace]
+name = "sar-damage"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64", "win-64"]
+version = "0.1.0"
+
+[dependencies]
+python = ">=3.12,<4"
+numpy = ">=1.26,<3"
+scipy = ">=1.11"
+rioxarray = ">=0.17"
+dask = ">=2024.10"
+
+[pypi-dependencies]
+duckdb = ">=1.5.2"
+pystac-client = ">=0.8"
+odc-stac = ">=0.4"
+h3 = ">=4"
+
+[tasks]
+extract = "python extract.py"
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "python extract.py --search-only", env = { DRY_RUN = "1", SAR_AOI = "iran_isfahan", SAR_EVENT_DATE = "2026-02-28" } }
+
+[tool.registry]
+description = "SAR damage detection (Pixel-Wise T-Test on Sentinel-1 GRD) for conflict AOIs in the ME region, event-driven"
+schedule = ""
+timeout = 120
+tags = ["sar", "damage-detection", "sentinel-1", "conflict", "middle-east"]
+schema = "sar-damage"
+table = "damage_cells"
+mode = "append"
+
+[tool.registry.runner]
+backend = "huggingface"
+flavor = "cpu-upgrade"
+image = "ghcr.io/walkthru-earth/ai-data-registry/sar-damage:latest"
+
+[tool.registry.license]
+code = "Apache-2.0"
+data = "CC-BY-4.0"
+data_source = "Copernicus Sentinel-1 (ESA)"
+mixed = false
+
+[tool.registry.checks]
+min_rows = 0
+max_null_pct = 20
+geometry = true
+unique_cols = ["h3_index", "aoi", "event_date"]
