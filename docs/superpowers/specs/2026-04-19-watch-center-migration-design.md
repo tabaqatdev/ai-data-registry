@@ -494,7 +494,7 @@ unique_cols = ["country_code", "datasource", "subtype", "timestamp"]
 - PBF sizes: Geofabrik GCC states is ~250-400 MB per region; full ME is larger
 
 **Gate 2 decisions:**
-- Schedule: `0 3 * * 0` (weekly, Sunday 03:00 UTC — OSM doesn't change fast, PBFs refresh daily but we sample weekly)
+- Schedule: `0 3 1 1 *` (annual, 1 Jan 03:00 UTC — core infrastructure (power lines, pipelines, petroleum sites) changes on the year scale; annual keeps CI and S3 costs in check. Upgrade to quarterly if SA's Vision 2030 buildout produces visible drift)
 - Mode: `replace` (weekly full refresh, not incremental — OSM edits are everywhere)
 - Scope: SA + Gulf bbox `25-62°E, 12-38°N`
 - Backend: `hetzner` / `cax21` (4 cores, 8 GB — PBF parsing is memory-heavy)
