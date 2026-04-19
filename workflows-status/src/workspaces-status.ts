@@ -1,31 +1,19 @@
 import { LitElement, css, html, nothing } from 'lit'
 import { customElement, state } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
-import { parse as parseToml } from 'smol-toml'
-
-type RegistryManifest = {
-  description?: string
-  schedule?: string
-  timeout?: number
-  tags?: string[]
-  schema?: string
-  table?: string
-  tables?: string[]
-  mode?: 'append' | 'replace' | 'upsert'
-  storage?: string | string[]
-  runner?: { backend?: string; flavor?: string; image?: string }
-  license?: {
-    code?: string
-    data?: string
-    data_source?: string
-    mixed?: boolean
-  }
-}
-
-type Workspace = {
-  name: string
-  manifest: RegistryManifest
-}
+import {
+  DEFAULT_BRANCH,
+  DEFAULT_OWNER,
+  DEFAULT_REPO,
+  RateLimitError,
+  describeCron,
+  detectRepoFromLocation,
+  ghJson,
+  loadWorkspaces,
+  relativeTime,
+  type RegistryManifest,
+  type Workspace,
+} from './lib.ts'
 
 type WorkflowRun = {
   id: number
@@ -54,69 +42,6 @@ const SYSTEM_WORKFLOWS: Record<string, string> = {
 }
 
 const REFRESH_INTERVAL_MS = 70_000
-const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
-
-function relativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime()
-  const diffSec = Math.round(diffMs / 1000)
-  const ranges: [number, Intl.RelativeTimeFormatUnit][] = [
-    [60, 'second'],
-    [3600, 'minute'],
-    [86400, 'hour'],
-    [86400 * 7, 'day'],
-    [86400 * 30, 'week'],
-    [86400 * 365, 'month'],
-    [Infinity, 'year'],
-  ]
-  const divs: Record<string, number> = {
-    second: 1,
-    minute: 60,
-    hour: 3600,
-    day: 86400,
-    week: 86400 * 7,
-    month: 86400 * 30,
-    year: 86400 * 365,
-  }
-  for (const [limit, unit] of ranges) {
-    if (Math.abs(diffSec) < limit) {
-      return RELATIVE.format(-Math.round(diffSec / divs[unit]), unit)
-    }
-  }
-  return new Date(iso).toLocaleString()
-}
-
-const DEFAULT_OWNER = 'walkthru-earth'
-const DEFAULT_REPO = 'ai-data-registry'
-const DEFAULT_BRANCH = 'main'
-
-function detectRepoFromLocation(): {
-  owner: string
-  repo: string
-} | null {
-  const host = location.hostname
-  const segs = location.pathname.split('/').filter(Boolean)
-
-  // user.github.io/repo/... → owner = user, repo = first path segment
-  // org.github.io/repo/...  → owner = org,  repo = first path segment
-  // user.github.io          → owner = user, repo = user.github.io (user site)
-  const ghPages = host.match(/^([^.]+)\.github\.io$/)
-  if (ghPages) {
-    const owner = ghPages[1]
-    const repo = segs[0] || `${owner}.github.io`
-    return { owner, repo }
-  }
-
-  // Custom domain: look for a <meta name="registry:repo" content="owner/repo">
-  const meta = document.querySelector<HTMLMetaElement>(
-    'meta[name="registry:repo"]',
-  )
-  if (meta?.content?.includes('/')) {
-    const [owner, repo] = meta.content.split('/')
-    if (owner && repo) return { owner, repo }
-  }
-
-  return null
-}
 
 @customElement('workspaces-status')
 export class WorkspacesStatus extends LitElement {
@@ -132,6 +57,8 @@ export class WorkspacesStatus extends LitElement {
   @state() private lastFetched: Date | null = null
   @state() private autoRefresh = true
   @state() private nextTickMs = REFRESH_INTERVAL_MS
+  @state() private rateLimitedUntil: Date | null = null
+  @state() private rateLimitCountdownMs = 0
   private _timer?: number
   private _tick?: number
 
@@ -185,59 +112,44 @@ export class WorkspacesStatus extends LitElement {
     this._tick = undefined
   }
 
+  private handleRateLimit(err: RateLimitError) {
+    this.rateLimitedUntil = err.resetAt
+    this.rateLimitCountdownMs = err.resetAt.getTime() - Date.now()
+    this.error = ''
+    this.stopPolling()
+    // Wake every second so the countdown updates, plus a final refresh shortly
+    // after the reset fires.
+    this._tick = window.setInterval(() => {
+      const remaining = err.resetAt.getTime() - Date.now()
+      this.rateLimitCountdownMs = Math.max(0, remaining)
+      if (remaining <= 0) {
+        window.clearInterval(this._tick!)
+        this._tick = undefined
+        this.rateLimitedUntil = null
+        // Small buffer so the server-side counter is definitely reset.
+        window.setTimeout(() => {
+          this.refresh().then(() => {
+            if (this.autoRefresh) this.startPolling()
+          })
+        }, 2000)
+      }
+    }, 1000)
+  }
+
   private toggleAuto() {
     this.autoRefresh = !this.autoRefresh
     if (this.autoRefresh) this.startPolling()
     else this.stopPolling()
   }
 
-  private async ghJson<T>(url: string): Promise<T> {
-    const res = await fetch(url, {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    })
-    if (!res.ok) {
-      throw new Error(`${res.status} ${res.statusText} on ${url}`)
-    }
-    return res.json() as Promise<T>
-  }
-
-  private async fetchRaw(path: string): Promise<string> {
-    const url = `https://raw.githubusercontent.com/${this.owner}/${this.repo}/${this.branch}/${path}`
-    const res = await fetch(url)
-    if (!res.ok) throw new Error(`${res.status} on ${path}`)
-    return res.text()
-  }
-
   private async loadManifests() {
     this.loading = true
     this.error = ''
     try {
-      const entries = await this.ghJson<Array<{ name: string; type: string }>>(
-        `https://api.github.com/repos/${this.owner}/${this.repo}/contents/workspaces?ref=${this.branch}`,
-      )
-      const dirs = entries.filter((e) => e.type === 'dir').map((e) => e.name)
-
-      const manifests = await Promise.all(
-        dirs.map(async (name): Promise<Workspace | null> => {
-          try {
-            const text = await this.fetchRaw(`workspaces/${name}/pixi.toml`)
-            const parsed = parseToml(text) as {
-              tool?: { registry?: RegistryManifest }
-            }
-            const manifest = parsed.tool?.registry
-            if (!manifest) return null
-            return { name, manifest }
-          } catch {
-            return null
-          }
-        }),
-      )
-      this.workspaces = manifests.filter((w): w is Workspace => w !== null)
+      this.workspaces = await loadWorkspaces(this.owner, this.repo, this.branch)
     } catch (e) {
-      this.error = (e as Error).message
+      if (e instanceof RateLimitError) this.handleRateLimit(e)
+      else this.error = (e as Error).message
     } finally {
       this.loading = false
     }
@@ -247,7 +159,7 @@ export class WorkspacesStatus extends LitElement {
     this.loading = true
     this.error = ''
     try {
-      const runs = await this.ghJson<{ workflow_runs: WorkflowRun[] }>(
+      const runs = await ghJson<{ workflow_runs: WorkflowRun[] }>(
         `https://api.github.com/repos/${this.owner}/${this.repo}/actions/runs?per_page=100`,
       )
       const map = new Map<string, WorkflowRun[]>()
@@ -277,7 +189,8 @@ export class WorkspacesStatus extends LitElement {
       this.lastFetched = new Date()
       this.nextTickMs = REFRESH_INTERVAL_MS
     } catch (e) {
-      this.error = (e as Error).message
+      if (e instanceof RateLimitError) this.handleRateLimit(e)
+      else this.error = (e as Error).message
     } finally {
       this.loading = false
     }
@@ -348,7 +261,9 @@ export class WorkspacesStatus extends LitElement {
           <dd><code class="pill mode-${m.mode}">${m.mode ?? '—'}</code></dd>
 
           <dt>Schedule</dt>
-          <dd><code>${m.schedule ?? '—'}</code></dd>
+          <dd>
+            <span title=${m.schedule ?? ''}>${describeCron(m.schedule ?? '')}</span>
+          </dd>
 
           <dt>Backend</dt>
           <dd>
@@ -445,6 +360,34 @@ export class WorkspacesStatus extends LitElement {
     `
   }
 
+  private renderRateLimitBanner() {
+    if (!this.rateLimitedUntil) return nothing
+    const totalSec = Math.max(0, Math.ceil(this.rateLimitCountdownMs / 1000))
+    const m = Math.floor(totalSec / 60)
+    const s = totalSec % 60
+    const pretty =
+      m > 0 ? `${m} min ${String(s).padStart(2, '0')} sec` : `${s} sec`
+    const resetLocal = this.rateLimitedUntil.toLocaleTimeString()
+    return html`
+      <div class="ratelimit" role="status">
+        <div class="ratelimit-head">
+          <span class="ratelimit-dot"></span>
+          <strong>GitHub API rate limit hit</strong>
+        </div>
+        <p class="ratelimit-msg">
+          Live updates pause for
+          <strong class="ratelimit-count">${pretty}</strong>
+          (resumes at <code>${resetLocal}</code>).
+        </p>
+        <p class="muted small">
+          The public API allows 60 requests per hour per IP. The page will
+          automatically refresh when the window resets. Cached data below is
+          still accurate as of the last successful update.
+        </p>
+      </div>
+    `
+  }
+
   render() {
     const s = this.summary()
     const countdown = Math.ceil(this.nextTickMs / 1000)
@@ -476,6 +419,7 @@ export class WorkspacesStatus extends LitElement {
             : nothing}
         </div>
         <div class="controls">
+          <a class="nav-link" href="./upcoming.html">Upcoming →</a>
           <button
             class=${this.autoRefresh ? 'on' : ''}
             @click=${() => this.toggleAuto()}
@@ -518,7 +462,11 @@ export class WorkspacesStatus extends LitElement {
         )}
       </section>
 
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.rateLimitedUntil
+        ? this.renderRateLimitBanner()
+        : this.error
+          ? html`<p class="error">${this.error}</p>`
+          : nothing}
       ${this.loading && this.workspaces.length === 0
         ? html`<p class="muted center">Loading workspaces…</p>`
         : nothing}
@@ -551,10 +499,13 @@ export class WorkspacesStatus extends LitElement {
       --running-bg: #fef3c7;
       --cancelled-bg: #f3f4f6;
       display: block;
+      width: 100%;
       max-width: 1200px;
       margin: 0 auto;
       padding: 24px;
+      box-sizing: border-box;
       color: var(--fg);
+      font-variant-numeric: tabular-nums;
       font:
         14px/1.5 system-ui,
         -apple-system,
@@ -735,6 +686,20 @@ export class WorkspacesStatus extends LitElement {
     .controls {
       display: flex;
       gap: 8px;
+      align-items: center;
+    }
+
+    .nav-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+    }
+
+    .nav-link:hover {
+      border-color: var(--accent);
     }
 
     input,
@@ -781,6 +746,45 @@ export class WorkspacesStatus extends LitElement {
       border-radius: 6px;
       background: var(--failure-bg);
       color: var(--failure);
+    }
+
+    .ratelimit {
+      padding: 14px 16px;
+      border-radius: 10px;
+      background: var(--running-bg);
+      color: var(--running);
+      border: 1px solid color-mix(in srgb, var(--running) 30%, transparent);
+      margin-bottom: 20px;
+    }
+
+    .ratelimit-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      margin-bottom: 4px;
+    }
+
+    .ratelimit-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--running);
+      animation: pulse 1.8s infinite;
+    }
+
+    .ratelimit-msg {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .ratelimit-count {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .small {
+      font-size: 12px;
+      margin: 6px 0 0;
     }
 
     .grid {
