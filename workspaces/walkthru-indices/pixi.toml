@@ -17,12 +17,20 @@ pipeline = { depends-on = ["extract", "validate"] }
 dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 
 [tool.registry]
-description = "Pre-aggregated H3 res-5 indices for SA + Gulf: population (2025-2100, SSP2), buildings, terrain"
-schedule = "0 4 * * 1"
-timeout = 15
-tags = ["h3", "population", "buildings", "terrain", "walkthru-earth", "middle-east"]
+description = "H3 res-5 indices for SA + Gulf: population, buildings, terrain (static), + Overture-based base/buildings/places/transportation (latest release)"
+schedule = "0 5 16 * *"
+timeout = 20
+tags = ["h3", "population", "buildings", "terrain", "overture", "places", "transportation", "walkthru-earth", "middle-east"]
 schema = "walkthru-indices"
-tables = ["population_h3r5", "buildings_h3r5", "terrain_h3r5"]
+tables = [
+    "population_h3r5",
+    "buildings_h3r5",
+    "terrain_h3r5",
+    "base_h3r5",
+    "buildings_overture_h3r5",
+    "places_h3r5",
+    "transportation_h3r5",
+]
 mode = "replace"
 
 [tool.registry.runner]
@@ -32,7 +40,7 @@ flavor = "ubuntu-latest"
 [tool.registry.license]
 code = "Apache-2.0"
 data = "CC-BY-4.0"
-data_source = "Walkthru.Earth Indices v2"
+data_source = "Walkthru.Earth Indices (WorldPop, Global Building Atlas, GEDTM-30m, Overture Maps)"
 mixed = false
 
 [tool.registry.checks]
@@ -48,4 +56,20 @@ unique_cols = ["h3_index"]
 
 [tool.registry.checks.terrain_h3r5]
 min_rows = 10000
+unique_cols = ["h3_index"]
+
+[tool.registry.checks.base_h3r5]
+min_rows = 5000
+unique_cols = ["h3_index"]
+
+[tool.registry.checks.buildings_overture_h3r5]
+min_rows = 5000
+unique_cols = ["h3_index"]
+
+[tool.registry.checks.places_h3r5]
+min_rows = 3000
+unique_cols = ["h3_index"]
+
+[tool.registry.checks.transportation_h3r5]
+min_rows = 5000
 unique_cols = ["h3_index"]
