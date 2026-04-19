@@ -17,10 +17,10 @@ pipeline = { depends-on = ["extract", "validate"] }
 dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 
 [tool.registry]
-description = "TeleGeography submarine cable geometries + landing points, clipped to the ME/Red Sea corridor, semi-annual refresh"
+description = "TeleGeography global submarine cable geometries + landing points, semi-annual refresh"
 schedule = "0 5 1 1,7 *"
 timeout = 15
-tags = ["telegeography", "submarine-cables", "infrastructure", "red-sea", "gulf", "middle-east"]
+tags = ["telegeography", "submarine-cables", "infrastructure", "global", "network-topology"]
 schema = "submarine-cables"
 tables = ["cables", "landing_points"]
 mode = "replace"
@@ -40,9 +40,9 @@ schema_match = true
 geometry = true
 
 [tool.registry.checks.cables]
-min_rows = 10
+min_rows = 500
 unique_cols = ["feature_id"]
 
 [tool.registry.checks.landing_points]
-min_rows = 10
+min_rows = 1000
 unique_cols = ["lp_id"]

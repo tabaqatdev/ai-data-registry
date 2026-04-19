@@ -22,8 +22,8 @@ def main():
     db.execute("INSTALL spatial; LOAD spatial;")
 
     for table, min_rows, key in (
-        ("cables", 10, "feature_id"),
-        ("landing_points", 10, "lp_id"),
+        ("cables", 500, "feature_id"),
+        ("landing_points", 1000, "lp_id"),
     ):
         path = f"{OUT}/{table}.parquet"
         if not os.path.exists(path):
@@ -45,11 +45,17 @@ def main():
         ).fetchone()[0]
         assert null_geom == 0, f"{table}: {null_geom} null geometry"
 
-    # cables total length in ME bbox (km, geodesic-ish approximation)
-    total_km = db.execute(f"""
-        SELECT SUM(ST_Length_Spheroid(geometry))/1000 FROM read_parquet('{OUT}/cables.parquet')
-    """).fetchone()[0]
-    log.info("cables total length in AOI: %.0f km", total_km or 0)
+    # global cable total length (km, spheroid); NaN from antimeridian-crossers
+    # is ignored so the total is a lower bound.
+    total_km, n_nan = db.execute(f"""
+        SELECT
+            SUM(CASE WHEN isfinite(ST_Length_Spheroid(geometry))
+                     THEN ST_Length_Spheroid(geometry) END)/1000,
+            SUM(CASE WHEN NOT isfinite(ST_Length_Spheroid(geometry)) THEN 1 ELSE 0 END)
+        FROM read_parquet('{OUT}/cables.parquet')
+    """).fetchone()
+    log.info("global cables total length: %.0f km (%d antimeridian segments skipped)",
+             total_km or 0, n_nan or 0)
 
     # landing points per country hint (simplified: use name suffix after last comma)
     sample = db.execute(f"""

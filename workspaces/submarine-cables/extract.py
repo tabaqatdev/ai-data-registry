@@ -1,15 +1,11 @@
-"""Extract TeleGeography submarine cables + landing points, clipped to ME.
+"""Extract TeleGeography global submarine cables + landing points.
 
 Source: https://www.submarinecablemap.com/api/v3/{cable,landing-point}-geo.json
-ME/Red Sea corridor bbox: 20-75 deg E, 5-45 deg N. Wider than Gulf-only so
-that cables landing on the Mediterranean/Arabian coasts are both captured.
+Covers the full global cable network (~710 cables, ~1,910 landing points).
 
-Cables are MultiLineString; we intersect with the bbox polygon so only the
-segments touching the AOI are retained. Landing points are points; we filter
-by coordinate.
-
-Mode is "replace": TeleGeography publishes a single current snapshot, weekly
-refresh is plenty.
+Mode "replace": TeleGeography publishes a single current snapshot. Topology
+changes slowly (new cables light up, old ones retire), so we re-extract the
+whole thing every run and let the runner drop the previous parquet.
 """
 
 import logging
@@ -28,8 +24,6 @@ log = logging.getLogger(__name__)
 
 OUT = os.environ.get("OUTPUT_DIR", "output")
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
-
-BBOX = {"lat_min": 5.0, "lat_max": 45.0, "lon_min": 20.0, "lon_max": 75.0}
 
 CABLES_URL = "https://www.submarinecablemap.com/api/v3/cable/cable-geo.json"
 LANDING_URL = "https://www.submarinecablemap.com/api/v3/landing-point/landing-point-geo.json"
@@ -87,38 +81,25 @@ def main():
     db.execute("INSTALL h3 FROM community; LOAD h3;")
     db.execute("SET geometry_always_xy = true;")
 
-    bbox_wkt = (
-        f"POLYGON(({BBOX['lon_min']} {BBOX['lat_min']}, "
-        f"{BBOX['lon_max']} {BBOX['lat_min']}, "
-        f"{BBOX['lon_max']} {BBOX['lat_max']}, "
-        f"{BBOX['lon_min']} {BBOX['lat_max']}, "
-        f"{BBOX['lon_min']} {BBOX['lat_min']}))"
-    )
-
-    # Cables: MultiLineString, intersect with bbox to keep only ME segments
+    # Cables: global MultiLineString features
     out_cables = f"{OUT}/cables.parquet"
     db.execute(f"""
         COPY (
             WITH raw AS (
                 SELECT unnest(features) AS f
                 FROM read_json_auto('{cables_path}', maximum_object_size=134217728)
-            ),
-            geom AS (
-                SELECT
-                    f.properties.feature_id AS feature_id,
-                    f.properties.id AS cable_id,
-                    f.properties.name AS cable_name,
-                    f.properties.color AS color,
-                    ST_SetCRS(ST_GeomFromGeoJSON(to_json(f.geometry)), 'EPSG:4326') AS g
-                FROM raw
             )
             SELECT
-                feature_id, cable_id, cable_name, color,
+                f.properties.feature_id AS feature_id,
+                f.properties.id AS cable_id,
+                f.properties.name AS cable_name,
+                f.properties.color AS color,
                 '{snapshot}'::TIMESTAMP AS snapshot_time,
-                ST_Intersection(g, ST_GeomFromText('{bbox_wkt}')) AS geometry
-            FROM geom
-            WHERE ST_Intersects(g, ST_GeomFromText('{bbox_wkt}'))
-            ORDER BY ST_Hilbert(ST_Centroid(g))
+                ST_SetCRS(ST_GeomFromGeoJSON(to_json(f.geometry)), 'EPSG:4326') AS geometry
+            FROM raw
+            ORDER BY ST_Hilbert(ST_Centroid(
+                ST_SetCRS(ST_GeomFromGeoJSON(to_json(f.geometry)), 'EPSG:4326')
+            ))
         ) TO '{out_cables}' (
             FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 15,
             ROW_GROUP_SIZE 100000, GEOPARQUET_VERSION 'V2'
@@ -129,7 +110,7 @@ def main():
     ).fetchone()[0]
     log.info("cables.parquet: %d rows", n_cables)
 
-    # Landing points: point features, bbox filter
+    # Landing points: global point features
     out_lp = f"{OUT}/landing_points.parquet"
     db.execute(f"""
         COPY (
@@ -158,8 +139,6 @@ def main():
                     ), 'EPSG:4326'
                 ) AS geometry
             FROM raw
-            WHERE f.geometry.coordinates[2]::DOUBLE BETWEEN {BBOX['lat_min']} AND {BBOX['lat_max']}
-              AND f.geometry.coordinates[1]::DOUBLE BETWEEN {BBOX['lon_min']} AND {BBOX['lon_max']}
             ORDER BY ST_Hilbert(ST_Point(
                 f.geometry.coordinates[1]::DOUBLE,
                 f.geometry.coordinates[2]::DOUBLE
