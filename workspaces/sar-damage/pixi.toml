@@ -33,9 +33,8 @@ table = "damage_cells"
 mode = "append"
 
 [tool.registry.runner]
-backend = "huggingface"
-flavor = "cpu-upgrade"
-image = "ghcr.io/walkthru-earth/ai-data-registry/sar-damage:latest"
+backend = "hetzner"
+flavor = "cax41"
 
 [tool.registry.license]
 code = "Apache-2.0"
