@@ -15,12 +15,21 @@ DuckLake partitioning: day(snapshot_time), hour(snapshot_time) for states.
 DuckLake partitioning: day(last_seen) for flights.
 
 All timestamps converted from Unix epoch seconds via make_timestamp().
-GeoParquet written with GEOPARQUET_VERSION 'BOTH' for DuckLake zero-copy.
+GeoParquet written with GEOPARQUET_VERSION 'V2' (native Parquet GEOMETRY).
+
+Fetch strategy: download the JSON with Python urllib (retry + UA header) to
+a local temp file, then feed DuckDB a file path. Pointing DuckDB's httpfs at
+opensky-network.org directly is flaky for anonymous users, the HTTP HEAD
+probe that httpfs runs before GET frequently times out even when the
+subsequent body fetch would succeed.
 """
 
 import logging
 import os
+import tempfile
 import time
+import urllib.error
+import urllib.request
 
 import duckdb
 
@@ -36,12 +45,48 @@ FLIGHTS_URL = "https://opensky-network.org/api/flights/all"
 OUT = os.environ.get("OUTPUT_DIR", "output")
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 
+USER_AGENT = "ai-data-registry/opensky-flights"
+HTTP_TIMEOUT_SECS = 120
+HTTP_RETRIES = 4
+HTTP_RETRY_WAIT_SECS = 5
+
 
 def setup(db):
     """Load required extensions."""
     db.execute("INSTALL spatial; LOAD spatial;")
-    db.execute("INSTALL httpfs; LOAD httpfs;")
     db.execute("SET geometry_always_xy = true;")
+
+
+def fetch_json_to_file(url, dest_path):
+    """Download a JSON endpoint to a local file with retry on timeout/5xx.
+
+    OpenSky's anonymous tier is rate-limited and occasionally slow. We use
+    urllib with a long timeout, a UA header, and a small retry budget so a
+    single blip does not fail the whole run.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    last_err = None
+    for attempt in range(1, HTTP_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECS) as resp:
+                with open(dest_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(1024 * 256)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            size_mb = os.path.getsize(dest_path) / 1024 / 1024
+            log.info("  fetched %.1f MB in %d attempt(s)", size_mb, attempt)
+            return
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_err = e
+            code = getattr(e, "code", None)
+            if code is not None and 400 <= code < 500 and code != 429:
+                raise
+            log.warning("  attempt %d/%d failed (%s), retrying in %ds",
+                        attempt, HTTP_RETRIES, e, HTTP_RETRY_WAIT_SECS)
+            time.sleep(HTTP_RETRY_WAIT_SECS * attempt)
+    raise RuntimeError(f"giving up after {HTTP_RETRIES} attempts: {last_err}")
 
 
 def extract_states(db):
@@ -54,39 +99,50 @@ def extract_states(db):
     Anonymous access: ~10k aircraft globally, 10s update interval.
     """
     log.info("Fetching live state vectors from OpenSky Network...")
-    db.execute(f"""
-        CREATE OR REPLACE TABLE raw_states AS
-        WITH api AS (
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="opensky_states_", suffix=".json", delete=False
+    )
+    tmp.close()
+    try:
+        fetch_json_to_file(STATES_URL, tmp.name)
+        db.execute(f"""
+            CREATE OR REPLACE TABLE raw_states AS
+            WITH api AS (
+                SELECT
+                    unnest(states) AS sv,
+                    "time" AS snapshot_ts
+                FROM read_json_auto('{tmp.name}', maximum_object_size=536870912)
+            )
             SELECT
-                unnest(states) AS sv,
-                "time" AS snapshot_ts
-            FROM read_json_auto('{STATES_URL}')
-        )
-        SELECT
-            CAST(sv[1]  AS VARCHAR)  AS icao24,
-            NULLIF(TRIM(CAST(sv[2] AS VARCHAR)), '') AS callsign,
-            CAST(sv[3]  AS VARCHAR)  AS origin_country,
-            make_timestamp(CAST(sv[4]  AS BIGINT) * 1000000) AS time_position,
-            make_timestamp(CAST(sv[5]  AS BIGINT) * 1000000) AS last_contact,
-            CAST(sv[6]  AS DOUBLE)   AS longitude,
-            CAST(sv[7]  AS DOUBLE)   AS latitude,
-            CAST(sv[8]  AS DOUBLE)   AS baro_altitude,
-            CAST(sv[9]  AS BOOLEAN)  AS on_ground,
-            CAST(sv[10] AS DOUBLE)   AS velocity,
-            CAST(sv[11] AS DOUBLE)   AS true_track,
-            CAST(sv[12] AS DOUBLE)   AS vertical_rate,
-            CAST(sv[14] AS DOUBLE)   AS geo_altitude,
-            CAST(sv[15] AS VARCHAR)  AS squawk,
-            CAST(sv[16] AS BOOLEAN)  AS spi,
-            CAST(sv[17] AS INTEGER)  AS position_source,
-            make_timestamp(snapshot_ts * 1000000) AS snapshot_time,
-            ST_Point(CAST(sv[6] AS DOUBLE), CAST(sv[7] AS DOUBLE)) AS geometry
-        FROM api
-        WHERE sv[6] IS NOT NULL
-          AND sv[7] IS NOT NULL
-          AND CAST(sv[6] AS VARCHAR) != 'null'
-          AND CAST(sv[7] AS VARCHAR) != 'null'
-    """)
+                CAST(sv[1]  AS VARCHAR)  AS icao24,
+                NULLIF(TRIM(CAST(sv[2] AS VARCHAR)), '') AS callsign,
+                CAST(sv[3]  AS VARCHAR)  AS origin_country,
+                make_timestamp(CAST(sv[4]  AS BIGINT) * 1000000) AS time_position,
+                make_timestamp(CAST(sv[5]  AS BIGINT) * 1000000) AS last_contact,
+                CAST(sv[6]  AS DOUBLE)   AS longitude,
+                CAST(sv[7]  AS DOUBLE)   AS latitude,
+                CAST(sv[8]  AS DOUBLE)   AS baro_altitude,
+                CAST(sv[9]  AS BOOLEAN)  AS on_ground,
+                CAST(sv[10] AS DOUBLE)   AS velocity,
+                CAST(sv[11] AS DOUBLE)   AS true_track,
+                CAST(sv[12] AS DOUBLE)   AS vertical_rate,
+                CAST(sv[14] AS DOUBLE)   AS geo_altitude,
+                CAST(sv[15] AS VARCHAR)  AS squawk,
+                CAST(sv[16] AS BOOLEAN)  AS spi,
+                CAST(sv[17] AS INTEGER)  AS position_source,
+                make_timestamp(snapshot_ts * 1000000) AS snapshot_time,
+                ST_Point(CAST(sv[6] AS DOUBLE), CAST(sv[7] AS DOUBLE)) AS geometry
+            FROM api
+            WHERE sv[6] IS NOT NULL
+              AND sv[7] IS NOT NULL
+              AND CAST(sv[6] AS VARCHAR) != 'null'
+              AND CAST(sv[7] AS VARCHAR) != 'null'
+        """)
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
     count = db.execute("SELECT COUNT(*) FROM raw_states").fetchone()[0]
     snap = db.execute("SELECT MIN(snapshot_time) FROM raw_states").fetchone()[0]
@@ -108,7 +164,12 @@ def extract_flights(db):
     url = f"{FLIGHTS_URL}?begin={begin}&end={now}"
 
     log.info("Fetching completed flights from OpenSky Network...")
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="opensky_flights_", suffix=".json", delete=False
+    )
+    tmp.close()
     try:
+        fetch_json_to_file(url, tmp.name)
         db.execute(f"""
             CREATE OR REPLACE TABLE raw_flights AS
             SELECT
@@ -124,10 +185,10 @@ def extract_flights(db):
                 estArrivalAirportVertDistance AS arrival_vert_distance,
                 departureAirportCandidatesCount AS departure_candidates,
                 arrivalAirportCandidatesCount AS arrival_candidates
-            FROM read_json_auto('{url}')
+            FROM read_json_auto('{tmp.name}', maximum_object_size=536870912)
         """)
         count = db.execute("SELECT COUNT(*) FROM raw_flights").fetchone()[0]
-        log.info("Flights: %d completed flights in last 2h", count)
+        log.info("Flights: %d completed flights in last 1h", count)
         return count
     except Exception as e:
         log.warning("Flights endpoint failed (non-critical): %s", e)
@@ -144,6 +205,11 @@ def extract_flights(db):
             WHERE false
         """)
         return 0
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
 
 def generate_dry_run(db):
@@ -228,7 +294,7 @@ def write_states(db):
             COMPRESSION ZSTD,
             COMPRESSION_LEVEL 15,
             ROW_GROUP_SIZE 100000,
-            GEOPARQUET_VERSION 'BOTH'
+            GEOPARQUET_VERSION 'V2'
         )
     """)
     log.info("Wrote %s/states.parquet (%d rows)", OUT, count)
