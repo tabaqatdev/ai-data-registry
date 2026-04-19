@@ -1,0 +1,48 @@
+[workspace]
+name = "submarine-cables"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64", "win-64"]
+version = "0.1.0"
+
+[dependencies]
+python = ">=3.12,<4"
+
+[pypi-dependencies]
+duckdb = ">=1.5.2"
+
+[tasks]
+extract = "python extract.py"
+validate = { cmd = "python validate_local.py", depends-on = ["extract"] }
+pipeline = { depends-on = ["extract", "validate"] }
+dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
+
+[tool.registry]
+description = "TeleGeography submarine cable geometries + landing points, clipped to the ME/Red Sea corridor"
+schedule = "0 5 * * 1"
+timeout = 15
+tags = ["telegeography", "submarine-cables", "infrastructure", "red-sea", "gulf", "middle-east"]
+schema = "submarine-cables"
+tables = ["cables", "landing_points"]
+mode = "replace"
+
+[tool.registry.runner]
+backend = "github"
+flavor = "ubuntu-latest"
+
+[tool.registry.license]
+code = "Apache-2.0"
+data = "CC-BY-4.0"
+data_source = "TeleGeography Submarine Cable Map (submarinecablemap.com)"
+mixed = false
+
+[tool.registry.checks]
+schema_match = true
+geometry = true
+
+[tool.registry.checks.cables]
+min_rows = 10
+unique_cols = ["feature_id"]
+
+[tool.registry.checks.landing_points]
+min_rows = 10
+unique_cols = ["lp_id"]
