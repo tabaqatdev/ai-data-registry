@@ -11,6 +11,8 @@ Working example: `workspaces/test-minimal/pixi.toml`
 
 - **Workspace** = the directory (e.g. `workspaces/test-minimal/`)
 - **Schema** = `[tool.registry].schema`, the DuckLake schema and S3 prefix. Must be unique across all workspaces.
+- **Schema and workspace names must match `^[a-z][a-z0-9-]*$`**: lowercase, hyphens allowed, **underscores are rejected** by `validate_manifest.py`. Tables use a separate pattern `^[a-z][a-z0-9_]*$` (underscores allowed).
+- Hyphenated schemas need double-quoting in SQL: `SELECT * FROM "nasa-firms".active_fires`.
 
 ## Required `[tool.registry]` Section
 
@@ -49,6 +51,18 @@ schema_match = true
 ```
 
 Per-table checks override globals: `[tool.registry.checks.<table_name>]`
+
+## Mode: append vs replace
+
+Use `mode = "append"` when the dataset changes over time and consumers need the full history:
+- Events with timestamps (fires, quakes, signals) — keyed on `(natural_key, snapshot_time)`
+- Reference catalogs where entries move in/out (sanctions, satellites) — keyed on `(natural_key, snapshot_date)`
+- Each run uploads a timestamped Parquet file, `merge_catalog.py` registers all files, DuckLake retains full history
+
+Use `mode = "replace"` when upstream publishes a full state that supersedes the prior one and history is not worth the bytes:
+- Weekly OSM snapshot of static infrastructure
+- Slow-changing pre-aggregated indices (quarterly releases)
+- Prior files remain on S3 (timestamped filenames), but DuckLake only registers the latest
 
 ## Required Tasks
 

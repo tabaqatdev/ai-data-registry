@@ -98,23 +98,73 @@ SELECT *, ST_SetCRS(ST_Point(lon, lat), 'EPSG:4326') AS geometry
 FROM raw_data;
 ```
 
-Then export with CRS, spatial sort, and bbox:
+Then export using **GeoParquet 2.0** (`GEOPARQUET_VERSION 'V2'`). V2 uses the
+native Parquet `GEOMETRY`/`GEOGRAPHY` logical types (Parquet 2.11+) and ships
+native column statistics, so **no manual `bbox` column is needed** (gpio reports
+"No bbox column (correct for GeoParquet 2.0)").
+
 ```sql
 COPY (
-    SELECT * REPLACE (ST_SetCRS(geometry, 'EPSG:4326') AS geometry),
-           ST_Envelope(geometry) AS bbox
+    SELECT * REPLACE (ST_SetCRS(geometry, 'EPSG:4326') AS geometry)
     FROM my_table
     ORDER BY ST_Hilbert(geometry), time_col  -- spatial sort + temporal tiebreak
 ) TO '{output_dir}/{table_name}.parquet' (
     FORMAT PARQUET,
     COMPRESSION ZSTD,
     COMPRESSION_LEVEL 15,
-    ROW_GROUP_SIZE 100000
+    ROW_GROUP_SIZE 100000,
+    GEOPARQUET_VERSION 'V2'
 );
 ```
+
+Do NOT use `GEOPARQUET_VERSION 'BOTH'`, it writes legacy 1.0 + 1.1 metadata and
+triggers gpio "upgrade to 1.1.0+ recommended" warnings. V2 is strictly better.
+
 Validate: `pixi run gpio check all output.parquet`
 
 Non-spatial tables skip geometry/Hilbert but keep ZSTD and row group size.
+
+### Multi-resolution H3 attribute columns
+
+For point datasets, attach H3 cell IDs at three resolutions alongside the
+geometry (not replacing it). Each cell is 8 bytes; 3 cells per row adds ~24 B.
+Consumers pick aggregation resolution at query time without recomputing.
+
+```sql
+-- Load the H3 extension (community)
+INSTALL h3 FROM community; LOAD h3;
+
+-- r5 ~= country-wide aggregation (~8.5 km edge)
+-- r8 ~= neighborhood (~460 m edge)
+-- r10 ~= building-cluster (~66 m edge)
+h3_latlng_to_cell(latitude, longitude, 5)::UBIGINT AS h3_r5,
+h3_latlng_to_cell(latitude, longitude, 8)::UBIGINT AS h3_r8,
+h3_latlng_to_cell(latitude, longitude, 10)::UBIGINT AS h3_r10,
+```
+
+Always cast to `UBIGINT` (H3 cell IDs are unsigned 64-bit). `BIGINT` risks
+overflow on high-resolution cells. Input order is `(LAT, LNG)` for H3, the
+opposite of A5/S2 which are `(LON, LAT)`.
+
+### Historical retention via append + snapshot_date
+
+When the dataset's state evolves between runs (fires detected, signals changing,
+entities added to or removed from sanctions), use `mode = "append"` plus either:
+
+- `snapshot_time TIMESTAMP` as part of the unique key (sub-daily cadence), OR
+- `snapshot_date DATE` as part of the unique key (daily cadence)
+
+```sql
+-- Daily snapshots of evolving reference data
+SELECT
+    ...,
+    '{snapshot_iso}'::TIMESTAMP AS snapshot_time,
+    '{snapshot_date}'::DATE AS snapshot_date
+FROM raw
+```
+
+Declare the same columns in `[tool.registry.checks].unique_cols` so the CI's
+uniqueness check reflects the intended composite key.
 
 ## 6. Required Environment Variables
 

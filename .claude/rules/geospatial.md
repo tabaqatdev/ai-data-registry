@@ -15,8 +15,9 @@ paths:
 
 ## GeoParquet as Standard Interchange
 - **GeoParquet is the standard format** for all data exchange between tools and workspaces
-- Optimize: `pixi run gpio sort hilbert` → `gpio add bbox` → `gpio check all`
-- Best practices: Hilbert sorting, zstd level 15, bbox covering, row groups 50k-150k
+- **Prefer GeoParquet 2.0 for new outputs**: DuckDB `COPY ... (GEOPARQUET_VERSION 'V2')` writes native Parquet `GEOMETRY`/`GEOGRAPHY` types with built-in column statistics, no manual `bbox` column needed
+- For GeoParquet 1.x files, optimize with: `pixi run gpio sort hilbert` → `gpio add bbox` → `gpio check all`
+- Best practices: Hilbert sorting, zstd level 15, row groups 50k-150k; bbox column only for GeoParquet 1.x (V2 has native bbox via column stats)
 
 ## Tool Selection
 - **gpio** (`pixi run gpio`): GeoParquet optimization, validation, spatial indexing, partitioning

@@ -53,9 +53,11 @@ SET geometry_always_xy = true;  -- use BEFORE any ST_Transform call
 ```
 
 **Grid index coordinate order differs:**
-- H3: `h3_latlng_to_cell(latitude, longitude, res)` (LAT, LNG)
+- H3: `h3_latlng_to_cell(latitude, longitude, res)` (LAT, LNG) — community extension (`INSTALL h3 FROM community; LOAD h3;`), returns `UBIGINT`, cast to `UBIGINT` for Parquet (not `BIGINT`)
 - A5: `a5_lonlat_to_cell(longitude, latitude, res)` (LON, LAT)
 - S2: `s2_cellfromlonlat(longitude, latitude)` (LON, LAT)
+
+**Writing GeoParquet 2.0:** use `GEOPARQUET_VERSION 'V2'` in `COPY` options. V2 uses native Parquet `GEOMETRY`/`GEOGRAPHY` logical types (Parquet 2.11+), has built-in column statistics for spatial filter pushdown, and needs **no manual bbox column**. Avoid `'BOTH'`, which only writes legacy 1.0/1.1 metadata.
 
 **S3 credentials: `SET s3_*` vs `CREATE SECRET`:**
 - `SET s3_*` works for direct Parquet reads (`FROM 's3://...'`)
@@ -73,9 +75,16 @@ WHERE strptime(date_col::VARCHAR, '%Y%m%d')::DATE >= CURRENT_DATE - INTERVAL '7 
 
 ```sql
 COPY (
-    SELECT *, ST_Envelope(geometry) AS bbox
+    SELECT *
     FROM read_parquet('input.parquet')
     ORDER BY ST_Hilbert(geometry)
-) TO 'output.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000);
+) TO 'output.parquet' (
+    FORMAT PARQUET,
+    COMPRESSION ZSTD,
+    COMPRESSION_LEVEL 15,
+    ROW_GROUP_SIZE 100000,
+    GEOPARQUET_VERSION 'V2'
+);
 ```
+No manual `bbox` column, V2 has native column statistics.
 Then validate: `pixi run gpio check all output.parquet`
