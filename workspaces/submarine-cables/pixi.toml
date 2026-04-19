@@ -17,8 +17,8 @@ pipeline = { depends-on = ["extract", "validate"] }
 dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 
 [tool.registry]
-description = "TeleGeography submarine cable geometries + landing points, clipped to the ME/Red Sea corridor"
-schedule = "0 5 * * 1"
+description = "TeleGeography submarine cable geometries + landing points, clipped to the ME/Red Sea corridor, semi-annual refresh"
+schedule = "0 5 1 1,7 *"
 timeout = 15
 tags = ["telegeography", "submarine-cables", "infrastructure", "red-sea", "gulf", "middle-east"]
 schema = "submarine-cables"
