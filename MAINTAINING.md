@@ -82,8 +82,7 @@ bucket_secret = "S3_BUCKET"
 region_secret = "S3_REGION"
 write_key_id_secret = "S3_WRITE_KEY_ID"
 write_secret_key_secret = "S3_WRITE_SECRET"
-catalog_prefix = ".catalogs"
-global_catalog = "catalog.duckdb"
+global_catalog = "catalog.duckdb"      # single global DuckLake catalog
 staging_prefix = "pr"
 
 [backends.github]
@@ -278,7 +277,7 @@ All merge runs share `concurrency: catalog-merge` so they never overlap. GitHub 
 ## Watch Out For
 
 - GDAL version must match libgdal-arrow-parquet version
-- gpio: install via `pixi add --pypi geoparquet-io --pre` (PyPI beta)
+- gpio: install via `pixi add --pypi geoparquet-io` (PyPI, v1.0+ stable)
 - Workspaces are standalone pixi projects (own `pixi.toml` + committed `pixi.lock`). CI uses `--manifest-path` to target them
 - `merge-catalog.yml` triggers automatically via `workflow_run` when any extract completes
 - `build-image.yml` triggers on Dockerfile changes pushed to main

@@ -17,4 +17,4 @@ duckdb = ">=1.5.2,<2"
 s5cmd = ">=2.3.0,<3"
 
 [pypi-dependencies]
-geoparquet-io = ">=1.0.0b2"
+geoparquet-io = ">=1.0.0,<2"

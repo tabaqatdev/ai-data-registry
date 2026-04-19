@@ -12,13 +12,12 @@
 # Data is replicated to ALL declared storages simultaneously.
 #
 # S3 layout (relative to bucket root):
-#   s3://{bucket}/{owner}/{repo}/{branch}/{schema}/{table}/{timestamp}.parquet
-#   s3://{bucket}/{owner}/{repo}/{branch}/.catalogs/{workspace}.duckdb
-#   s3://{bucket}/{owner}/{repo}/{branch}/catalog.duckdb
-#   s3://{bucket}/{owner}/{repo}/pr/{pr_number}/{workspace}/{table}.parquet
+#   s3://{bucket}/{owner}/{repo}/{branch}/catalog.duckdb                        # global DuckLake catalog
+#   s3://{bucket}/{owner}/{repo}/{branch}/{schema}/{table}/{timestamp}.parquet  # workspace data
+#   s3://{bucket}/{owner}/{repo}/pr/{pr_number}/{workspace}/{table}.parquet     # PR staging
 #
-# CRITICAL: Catalog files use DuckDB backend (.duckdb), NOT SQLite (.ducklake).
-# DuckDB catalogs support remote S3/HTTPS read-only access. SQLite catalogs do not
+# CRITICAL: Catalog uses DuckDB backend (.duckdb), NOT SQLite (.ducklake).
+# DuckDB catalogs support remote S3/HTTPS read-only ATTACH. SQLite catalogs do not
 # (blocked by duckdb/ducklake#912). This enables direct querying without downloading.
 
 [storage.eu-hetzner]
@@ -30,8 +29,7 @@ bucket_secret = "S3_BUCKET"                   # e.g. registry
 region_secret = "S3_REGION"                   # e.g. fsn1 (optional, depends on provider)
 write_key_id_secret = "S3_WRITE_KEY_ID"       # S3 access key with write permission
 write_secret_key_secret = "S3_WRITE_SECRET"   # S3 secret key
-catalog_prefix = ".catalogs"                  # where workspace catalogs live
-global_catalog = "catalog.duckdb"             # global catalog filename
+global_catalog = "catalog.duckdb"             # global catalog filename (single source of truth)
 staging_prefix = "pr"                         # PR staging data prefix
 
 [backends.github]

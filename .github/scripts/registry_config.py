@@ -203,17 +203,6 @@ def build_s3_root(storage_name: str) -> str:
     return "/".join(parts) + "/"
 
 
-def build_catalog_path(storage_name: str, workspace: str) -> str:
-    """Build the S3 path for a workspace catalog.
-
-    Returns: s3://{bucket}/{owner}/{repo}/{branch}/.catalogs/{workspace}.duckdb
-    """
-    storages = load_storage_configs()
-    cfg = storages[storage_name]
-    root = build_s3_root(storage_name)
-    return f"{root}{cfg['catalog_prefix']}/{workspace}.duckdb"
-
-
 def build_global_catalog_path(storage_name: str) -> str:
     """Build the S3 path for the global catalog.
 

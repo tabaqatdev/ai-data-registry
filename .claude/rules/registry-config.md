@@ -19,8 +19,7 @@ bucket_secret = "S3_BUCKET"
 region_secret = "S3_REGION"
 write_key_id_secret = "S3_WRITE_KEY_ID"
 write_secret_key_secret = "S3_WRITE_SECRET"
-catalog_prefix = ".catalogs"
-global_catalog = "catalog.duckdb"
+global_catalog = "catalog.duckdb"      # single global DuckLake catalog (no workspace catalogs)
 staging_prefix = "pr"
 
 [backends.github]
@@ -61,6 +60,6 @@ s3://{bucket}/{owner}/{repo}/
 - Adding a new storage: add `[storage.<name>]` with all required fields. Set corresponding GitHub secrets.
 - Adding a new backend: add `[backends.<name>]` with `workflow` and `flavors`
 - Changing flavors: update the `flavors` array. `validate_manifest.py` reads this at runtime.
-- Storage layout: `catalog_prefix`, `global_catalog`, `staging_prefix` are per-storage
+- Storage layout: `global_catalog` and `staging_prefix` are per-storage
 - `registry_config.py` auto-discovers storages and backends from this file
 - Legacy flat `[storage]` format is auto-detected and treated as `[storage.default]`

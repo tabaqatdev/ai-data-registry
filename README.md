@@ -23,15 +23,15 @@ flowchart LR
         HF[HuggingFace GPU]
     end
 
-    subgraph Storage
-        S3[(S3 Parquet)]
-        CAT[(DuckLake catalog)]
+    subgraph Storage[S3 Storage]
+        S3[(Parquet files)]
+        CAT[(catalog.duckdb<br/>DuckLake global)]
     end
 
     PR --> L1 --> L2 --> L3 --> L4
     L4 -->|merge| GH & HZ & HF
     GH & HZ & HF --> S3
-    S3 --> CAT
+    S3 -->|"scan + add_data_files()"| CAT
 ```
 
 Each workspace is an isolated pipeline with its own language, deps, and compute backend. [DuckLake](https://ducklake.select/) federates all outputs into one queryable global catalog via zero-copy file registration.
@@ -91,7 +91,7 @@ schedule = "0 6 * * *"        # cron
 timeout = 30                  # minutes
 tags = ["topic"]
 schema = "my-pipeline"        # S3 prefix + DuckLake schema (must be unique)
-table = "data"
+table = "data"                # or: tables = ["a", "b"] for multi-table workspaces
 mode = "append"               # append | replace | upsert
 
 [tool.registry.runner]
@@ -185,7 +185,7 @@ flowchart TD
         S5 -->|"ducklake_add_data_files()"| GC
     end
 
-    GC -->|query| Q["SELECT * FROM global.schema.table"]
+    GC -->|query| Q["ATTACH 'ducklake:s3://.../catalog.duckdb' AS registry (READ_ONLY);<br/>SELECT * FROM registry.schema.table"]
 ```
 
 Workspace code has READ-ONLY S3 access. The workflow handles uploads with write credentials.
@@ -203,7 +203,7 @@ ai-data-registry/
 ├── LICENSE
 ├── .github/
 │   ├── registry.config.toml   # Backend + storage config
-│   ├── scripts/               # CI scripts (10 Python, uv + PEP 723)
+│   ├── scripts/               # CI scripts (13 Python, uv + PEP 723)
 │   └── workflows/             # 11 workflows (validation, extraction, scheduling)
 ├── workspaces/
 │   └── test-minimal/          # Reference implementation
@@ -217,7 +217,7 @@ ai-data-registry/
 │   ├── secrets-setup.md       # Repository secrets reference
 │   └── tool-versions.md       # Shared tool versions + deps guide
 └── .claude/
-    ├── rules/                 # 8 rules (auto-load by file path)
+    ├── rules/                 # 12 rules (auto-load by file path)
     ├── commands/              # 7 slash commands
     ├── skills/                # 6 skills (duckdb, gdal, geoparquet, etc.)
     └── agents/                # 3 agents (data-explorer, data-quality, pipeline)
@@ -240,7 +240,7 @@ All tools run through pixi. Never run directly.
 |------|---------|
 | GDAL >=3.12.3 | `pixi run gdal ...` |
 | DuckDB >=1.5.2 | `pixi run duckdb ...` |
-| gpio 1.0.0b2 | `pixi run gpio ...` |
+| gpio >=1.0.0 | `pixi run gpio ...` |
 | s5cmd >=2.3.0 | `pixi run s5cmd ...` |
 | Python >=3.12 | `pixi run python ...` |
 | pnpm >=10.32.1 | `pixi run pnpm ...` |

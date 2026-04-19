@@ -12,7 +12,7 @@ pipeline = { depends-on = ["extract", "validate"] }
 dry-run = { cmd = "python extract.py", env = { DRY_RUN = "1" } }
 
 [dependencies]
-python = ">=3.14.3,<3.15"
+python = ">=3.12,<4"
 
 [pypi-dependencies]
 duckdb = ">=1.5.2"

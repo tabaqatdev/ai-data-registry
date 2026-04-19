@@ -1,6 +1,6 @@
 # Data Registry Platform Architecture
 
-> **Note (2026-04-02):** Per-workspace catalogs have been removed. The platform now uses a single global catalog. The merge script scans S3 directly and registers files in the global catalog. This eliminates the shared-file ownership problem and enables safe compaction. Some sections below still reference the old two-catalog design as historical context.
+> **Current architecture (2026-04):** Single global DuckLake catalog. The merge script scans S3 directly and registers Parquet files in the global catalog via `ducklake_add_data_files()`. No per-workspace catalogs. This is the sole authoritative design, superseding the earlier two-catalog model.
 
 A git-native, PR-driven data platform. Each workspace is an isolated data pipeline with its own language, dependencies, and compute backend. Contributors add workspaces via PRs. Maintainers manage the supported infrastructure. DuckLake federates all workspace outputs into one queryable global catalog via direct S3 file registration.
 
@@ -37,11 +37,10 @@ graph TB
         HF["HuggingFace Jobs<br/>(GPU, Docker)"]
     end
 
-    subgraph "Hetzner Object Storage (S3)"
+    subgraph "Object Storage (S3)"
         direction TB
-        S3["s3://{bucket}/{owner}/{repo}/{branch}/{schema}/<br/>*.parquet"]
-        CATS["s3://{bucket}/{owner}/{repo}/{branch}/.catalogs/<br/>{name}.duckdb"]
-        GLOBAL["s3://{bucket}/{owner}/{repo}/{branch}/<br/>catalog.duckdb"]
+        S3["s3://{bucket}/{owner}/{repo}/{branch}/{schema}/{table}/<br/>*.parquet (timestamped)"]
+        GLOBAL["s3://{bucket}/{owner}/{repo}/{branch}/<br/>catalog.duckdb (global)"]
     end
 
     subgraph "Free GitHub Runner"
@@ -52,10 +51,10 @@ graph TB
     SCHED -->|"backend: hetzner"| HZ
     SCHED -->|"backend: huggingface"| HF
 
-    GH & HZ & HF -->|"Parquet"| S3
-    GH & HZ & HF -->|"catalog"| CATS
+    GH & HZ & HF -->|"upload Parquet"| S3
     GH & HZ & HF -->|"workflow_run"| MQ
-    MQ -->|"--all: diff + add_data_files()"| GLOBAL
+    MQ -->|"scan S3 + add_data_files()"| GLOBAL
+    MQ <-->|"pull / push"| GLOBAL
 ```
 
 ---
@@ -64,49 +63,43 @@ graph TB
 
 ### 1. Workspace Extraction (parallel, backend-dependent)
 
-Each workspace runner (GitHub, Hetzner, or HF Jobs, depending on `[tool.registry.runner].backend`):
-1. Pulls its workspace catalog from S3 (`s3://{bucket}/{owner}/{repo}/{branch}/.catalogs/{name}.duckdb`)
-2. Attaches it as a DuckLake with `DATA_PATH 's3://{bucket}/{owner}/{repo}/{branch}/'`, `META_JOURNAL_MODE 'WAL'`, `META_BUSY_TIMEOUT 500`
-3. Runs `pixi run --manifest-path workspaces/{name}/pixi.toml pipeline` which chains setup → extract → validate (stops on failure)
-4. Uploads the updated workspace catalog back to S3
+Each workspace runner (GitHub, Hetzner, or HF Jobs, per `[tool.registry.runner].backend`):
+1. Runs `pixi run --manifest-path workspaces/{name}/pixi.toml pipeline` which chains `extract` → `validate` (halts on first non-zero exit)
+2. `extract` writes one flat `<table>.parquet` per declared table to `$OUTPUT_DIR/`
+3. The workflow (not workspace code) validates output, then uploads each file to S3 with a timestamped name via `s5cmd`
 
-The workspace catalog is the workspace's ground truth. It has its own snapshots, time travel, and schema evolution.
+Workspace code has READ-ONLY S3 creds and never writes to S3 directly. Exception: HuggingFace containers upload themselves (no workflow-level step).
 
 ### 2. Global Catalog Merge (Free GitHub Runner, serial)
 
-Merge is triggered by `workflow_run` (fires when any extract workflow completes successfully) and a 10-minute cron backstop. Each merge run uses `--all` mode: discovers all workspaces, groups by storage, and merges everything pending in a single run.
+`merge-catalog.yml` triggers on three paths:
+- `workflow_run`: fires when any extract workflow completes successfully
+- Cron backstop every 10 minutes (catches runs dropped by the 1-pending concurrency limit)
+- `workflow_dispatch`: manual, optional `--workspace`
 
-The `concurrency: catalog-merge` group serializes runs (1 running + 1 pending). Since each run merges ALL pending workspaces, dropped pending runs do not lose data.
+The `concurrency: catalog-merge` group serializes runs (1 running + 1 pending). `--all` mode groups workspaces by storage, downloads the global catalog once per storage, merges every pending workspace, then uploads once. Dropped pending runs lose nothing because the surviving run picks up everything.
 
-**Per storage target, the merge downloads the global catalog once, then for each workspace:**
-
-**Phase 1 - Sync workspace catalog:**
-1. Downloads the workspace catalog from S3 (or creates a new one)
-2. For each table in `[tool.registry].tables`, scans S3 for Parquet files under `s3://bucket/{owner}/{repo}/{branch}/{schema}/{table}/*.parquet`
-3. Registers any files not yet tracked in the workspace catalog
-4. Uploads workspace catalog if changed
-
-**Phase 2 - Merge to global:**
-1. Diffs `ducklake_list_files()` between workspace and global
-2. Registers only NEW files in the global catalog via `ducklake_add_data_files()` (zero-copy)
-
-**After all workspaces are processed, uploads the global catalog once.**
+**Per storage target, the merge script:**
+1. Downloads `catalog.duckdb` from S3 (creates if absent)
+2. For each workspace table, globs `s3://{bucket}/{owner}/{repo}/{branch}/{schema}/{table}/*.parquet`
+3. Diffs the glob result against `ducklake_list_files()` in the global catalog
+4. Registers new files via `ducklake_add_data_files()` (zero-copy, path pointers only)
+   - **append mode**: registers all unregistered files
+   - **replace mode**: drops old registrations, keeps only the latest timestamped file
+5. Uploads the updated global catalog back to S3
 
 ```mermaid
 sequenceDiagram
-    participant S3 as Hetzner S3
+    participant S3 as S3
     participant MQ as Merge Queue<br/>(--all mode)
 
-    MQ->>S3: Pull catalog.duckdb (once)
+    MQ->>S3: Pull catalog.duckdb (once per storage)
 
-    Note over MQ: For each workspace:
+    Note over MQ: For each workspace table:
 
-    MQ->>S3: Pull weather.duckdb
-    MQ->>MQ: Diff weather files:<br/>ws has 5 files, global has 3<br/>= 2 new files to register
-    MQ->>MQ: ducklake_add_data_files()<br/>for 2 new weather files<br/>(zero-copy, S3 paths only)
-
-    MQ->>S3: Pull census.duckdb
-    MQ->>MQ: Diff census files:<br/>ws has 2 files, global has 2<br/>= 0 new files, skip
+    MQ->>S3: glob {schema}/{table}/*.parquet
+    MQ->>MQ: Diff S3 files vs<br/>ducklake_list_files()<br/>= N new files
+    MQ->>MQ: ducklake_add_data_files()<br/>(zero-copy path pointers)
 
     MQ->>S3: Push updated catalog.duckdb (once)
 ```
@@ -137,42 +130,40 @@ sequenceDiagram
 
 ## Deduplication: The File List Diff
 
-Since `ducklake_add_data_files` has no built-in duplicate detection, the merge queue must compute the diff:
+Since `ducklake_add_data_files` has no built-in duplicate detection, the merge script diffs S3 against the global catalog before registering:
 
 ```python
-def get_new_files(ws_catalog, global_catalog, schema, table):
-    """Files in workspace catalog not yet in global catalog."""
-    ws_files = duckdb.sql(f"""
-        SELECT data_file
-        FROM ducklake_list_files({quote_literal(ws_catalog)}, {quote_literal(table)}, schema => {quote_literal(schema)})
+def get_new_files(global_catalog, schema, table, s3_prefix):
+    """S3 Parquet files not yet registered in the global catalog."""
+    s3_files = duckdb.sql(f"""
+        SELECT file FROM glob({quote_literal(s3_prefix + '/*.parquet')})
     """).fetchall()
 
-    global_files = duckdb.sql(f"""
+    registered = duckdb.sql(f"""
         SELECT data_file
         FROM ducklake_list_files({quote_literal(global_catalog)}, {quote_literal(table)}, schema => {quote_literal(schema)})
     """).fetchall()
 
-    global_set = {f[0] for f in global_files}
-    return [f[0] for f in ws_files if f[0] not in global_set]
+    registered_set = {f[0] for f in registered}
+    return [f[0] for f in s3_files if f[0] not in registered_set]
 ```
+
+**Never overwrite a registered file.** `ducklake_add_data_files` caches `file_size_bytes` and `footer_size` at registration time. If the same S3 path is later overwritten with different bytes, DuckLake uses stale metadata for range requests (HTTP 416). The extract workflow prevents this by writing every extraction as `<timestamp>.parquet`.
 
 ---
 
 ## Compaction Safety
 
-`ducklake_add_data_files` transfers file ownership to the target catalog. If the global catalog runs compaction (`CHECKPOINT`, `merge_adjacent_files`), it could DELETE workspace Parquet files and replace them with compacted copies in the global DATA_PATH.
-
-**Rule: exclude the global catalog from bulk maintenance.**
+The global catalog is the **sole owner** of all registered Parquet files, so compaction is safe. `maintenance.py` runs `CHECKPOINT` weekly with `expire_older_than = 30 days` and `delete_older_than = 7 days`.
 
 ```sql
--- Global catalog is the sole file owner (single-catalog architecture).
--- auto_compact must be true for CHECKPOINT to run all 6 maintenance steps,
+-- Required: auto_compact=true so CHECKPOINT runs all 6 maintenance steps,
 -- including ducklake_delete_orphaned_files (cleans up replace-mode leftovers on S3).
--- Previously set to false in the old multi-catalog era to prevent shared-ownership issues.
 CALL global.set_option('auto_compact', true);
+CHECKPOINT;
 ```
 
-The global catalog owns all data files. Compaction (merge_adjacent_files, rewrite_data_files, delete_orphaned_files) is safe and required for S3 cleanup.
+Compaction (`merge_adjacent_files`, `rewrite_data_files`, `delete_orphaned_files`) is safe and required for S3 cleanup.
 
 ---
 
@@ -182,15 +173,11 @@ All paths are prefixed with `{owner}/{repo}/{branch}/` for repo and branch isola
 
 ```
 s3://registry/
-    walkthru-earth/                    # GitHub repo owner
+    walkthru-earth/                   # GitHub repo owner
         ai-data-registry/             # GitHub repo name
             main/                     # Git branch name
-                .catalogs/            # All DuckLake catalogs (DuckDB backend)
-                    weather.duckdb    # Workspace catalog (workspace-owned)
-                    opensky-flights.duckdb
-                catalog.duckdb        # Global catalog (merge-queue-owned)
-
-                weather/              # Workspace data prefix (= schema name)
+                catalog.duckdb        # Global DuckLake catalog (single source of truth)
+                weather/              # Schema prefix (= [tool.registry].schema)
                     observations/     # Table subdirectory
                         20260401T060000Z.parquet
                         20260402T060000Z.parquet
@@ -202,10 +189,7 @@ s3://registry/
 
             pr/                       # PR staging (no branch, keyed on PR number)
                 42/
-                    weather/
-                        observations/
-                            20260401T060000Z.parquet
-                42.duckdb             # PR-scoped workspace catalog (optional)
+                    weather/observations/20260401T060000Z.parquet
 ```
 
 **Rule: `schema` in pixi.toml = S3 prefix = workspace write boundary.** Each workspace can only write to its own prefix. The extract workflow timestamps each file to prevent overwrites and enable historical accumulation.
@@ -282,7 +266,6 @@ sequenceDiagram
     HR->>HR: Validate output<br/>(prefix, gpio, row counts)
     Note over HR: Workflow step (not workspace code)<br/>has S3 WRITE creds
     HR->>S3: upload_output.py<br/>s3://{bucket}/{owner}/{repo}/{branch}/weather/&lt;table&gt;/&lt;ts&gt;.parquet
-    HR->>S3: Upload workspace catalog
 ```
 
 ---
@@ -808,51 +791,40 @@ Any DuckDB client can attach multiple catalogs simultaneously for cross-workspac
 DuckDB catalogs (not SQLite) support remote S3/HTTPS read-only access via httpfs:
 
 ```sql
--- Attach individual workspace catalogs directly from S3 (read-only, no download needed)
--- CRITICAL: This requires DuckDB catalog backend (.duckdb), NOT SQLite (.ducklake).
--- SQLite catalogs do NOT support remote access (blocked by duckdb/ducklake#912).
-ATTACH 'ducklake:s3://registry/{owner}/{repo}/{branch}/.catalogs/weather.duckdb' AS weather (READ_ONLY);
-ATTACH 'ducklake:s3://registry/{owner}/{repo}/{branch}/.catalogs/census.duckdb' AS census (READ_ONLY);
-
--- Or attach the global catalog for everything
+-- Attach the global catalog directly from S3, read-only, no download required.
+-- CRITICAL: DuckDB catalog backend (.duckdb) only. SQLite (.ducklake) does NOT
+-- support remote access (blocked by duckdb/ducklake#912).
 ATTACH 'ducklake:s3://registry/{owner}/{repo}/{branch}/catalog.duckdb' AS registry (READ_ONLY);
 
--- Cross-catalog join
+-- Cross-schema join (all workspaces live in one catalog)
 SELECT w.city, c.pop
-FROM weather.weather.observations w
-JOIN census.census.population c ON w.city = c.country;
+FROM registry.weather.observations w
+JOIN registry.census.population c ON w.city = c.country;
 ```
 
 ---
 
 ## Maintenance
 
-Weekly compaction runs on **workspace catalogs only** (not the global catalog).
+Weekly compaction runs on the **global catalog** (sole file owner, so safe to compact).
 
 ```yaml
 # .github/workflows/maintenance.yml
-name: Workspace Maintenance
+name: Global Catalog Maintenance
 on:
   schedule:
     - cron: '0 3 * * 0'  # Sunday 3 AM UTC
 ```
 
-Each workspace catalog gets full maintenance via `CHECKPOINT` (v0.4+, runs all steps in order):
+`maintenance.py` runs `CHECKPOINT` with `auto_compact = true` so all 6 steps execute:
 ```sql
--- Option A: All-in-one (v0.4+). Runs: flush inlined data -> expire snapshots ->
--- merge adjacent files -> rewrite data files -> cleanup old files -> delete orphans.
--- Respects configured options (expire_older_than, delete_older_than, etc.)
-USE ws;
-CALL ws.set_option('expire_older_than', '30 days');
-CALL ws.set_option('delete_older_than', '7 days');
+-- Runs: flush inlined -> expire snapshots -> merge adjacent -> rewrite data files
+--       -> cleanup old files -> delete orphans (cleans up replace-mode leftovers)
+USE global;
+CALL global.set_option('auto_compact', true);
+CALL global.set_option('expire_older_than', '30 days');
+CALL global.set_option('delete_older_than', '7 days');
 CHECKPOINT;
-
--- Option B: Individual steps (more control)
-CALL ducklake_expire_snapshots('ws', older_than => now() - INTERVAL '30 days');
-CALL ducklake_merge_adjacent_files('ws');
-CALL ducklake_rewrite_data_files('ws');
-CALL ducklake_cleanup_old_files('ws', older_than => now() - INTERVAL '7 days');
-CALL ducklake_delete_orphaned_files('ws', older_than => now() - INTERVAL '7 days');
 ```
 
 The global catalog has `auto_compact = true` (sole file owner). Weekly maintenance runs CHECKPOINT to expire snapshots, merge files, and delete orphans from replace-mode workspaces.
@@ -920,7 +892,7 @@ ai-data-registry/
             pr-validate.yml          # 4-layer PR validation (dry-run on free runner)
             pr-extract.yml           # Maintainer-triggered full extraction on PR (staging)
             pr-cleanup.yml           # Auto-cleanup staging data on PR close/merge
-            maintenance.yml          # Weekly workspace compaction
+            maintenance.yml          # Weekly global catalog CHECKPOINT
         scripts/                     # All scripts use PEP 723 inline deps, run via `uv run`
             registry_config.py       # Shared config module (stdlib only, no external deps)
             find_due.py              # Schedule evaluation + backend routing + validation
@@ -930,7 +902,7 @@ ai-data-registry/
             check_catalog.py         # Live catalog queries
             validate_output.py       # Parquet quality checks
             submit_hf_job.py         # HF Jobs submission + polling
-            maintenance.py           # DuckLake CHECKPOINT on workspace catalogs
+            maintenance.py           # DuckLake CHECKPOINT on global catalog
 
     .claude/                         # AI rules, skills, agents (existing)
     research/                        # This file
@@ -962,8 +934,8 @@ Issues discovered during architecture research that affect this design:
 
 | Issue | What | Impact | Our Mitigation |
 |-------|------|--------|----------------|
-| **#579** | `add_data_files` does not extract hive partition metadata from file paths | Partition pruning won't work for zero-copy registered files. Queries scan all files. | Accept for now. For large tables, run compaction on workspace catalog (which rewrites with proper metadata), not global. |
-| **#572** | Catalog metadata bloat: 369MB metadata for 823MB data | Per-file column stats inflate the catalog. | Monitor workspace catalog sizes. If global catalog exceeds ~50MB, rebuild it fresh. |
+| **#579** | `add_data_files` does not extract hive partition metadata from file paths | Partition pruning won't work for zero-copy registered files. Queries scan all files. | Accept for now. Workspaces must write flat Parquet (one file per table), not hive-partitioned. |
+| **#572** | Catalog metadata bloat: 369MB metadata for 823MB data | Per-file column stats inflate the catalog. | Monitor global catalog size. If it exceeds ~50MB, rebuild it fresh from S3 scan. |
 | **#128** | Concurrent writes to same catalog fail | Single-writer limitation. | Already mitigated: one writer per catalog at all times. |
 | **#561** | Concurrent ATTACH to same catalog file fails | Multiple processes can't open the same catalog file. | Already mitigated: merge queue runs serial, workspace runners are isolated. |
 | **#912** | SQLite catalogs do not support remote S3/HTTPS access | `ducklake:sqlite:s3://...` fails with "Unsupported parameter: storage_version". | Resolved: switched to DuckDB catalog backend (.duckdb) which supports remote access. |
@@ -1024,7 +996,7 @@ Issues discovered during architecture research that affect this design:
 
 2. **Cross-workspace dependencies**: Can workspace B depend on workspace A's output? Would need `depends_on = ["weather"]` in `[tool.registry]` and DAG resolution in the scheduler.
 
-3. **Global catalog rebuild**: When the global catalog gets bloated (issue #572), what's the rebuild procedure? Likely: create fresh catalog, iterate all workspace catalogs, re-register all files.
+3. **Global catalog rebuild**: When the global catalog gets bloated (issue #572), what's the rebuild procedure? Likely: create fresh catalog, re-scan S3 per workspace, re-register all files via `ducklake_add_data_files()`.
 
 6. **Iceberg as derived output**: DuckDB 1.4.0+ can read AND write Iceberg tables (requires REST catalog like Lakekeeper). Should we generate Iceberg metadata as a post-merge step for multi-engine access (Spark, Trino, Snowflake)? Options: (a) static Iceberg metadata files on S3 (Portolan pattern, no server), (b) Lakekeeper container for full DuckDB read+write Iceberg, (c) defer until external consumers need access. DuckLake vs Iceberg research completed 2026-03-30.
 

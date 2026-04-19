@@ -8,7 +8,7 @@ description: >
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
-Run via `pixi run gpio`. Install: `pixi add --pypi geoparquet-io --pre`
+Run via `pixi run gpio`. Install: `pixi add --pypi geoparquet-io` (v1.0+ stable)
 
 ## Commands
 
