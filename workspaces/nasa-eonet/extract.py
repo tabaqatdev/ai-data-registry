@@ -33,17 +33,41 @@ BBOX = "25,5,65,40"
 DAYS_CLOSED = 30
 EONET_BASE = "https://eonet.gsfc.nasa.gov/api/v3/events"
 
+HTTP_TIMEOUT_SECS = 60
+HTTP_RETRIES = 4
+HTTP_RETRY_WAIT_SECS = 5
+
 
 def fetch(url):
+    """GET with linear-backoff retries, terminal on 4xx (except 429).
+
+    GitHub runners occasionally raise 'Network is unreachable' on IPv6
+    resolution for NASA EONET; a simple retry clears it.
+    """
     req = urllib.request.Request(
         url, headers={"User-Agent": "ai-data-registry/nasa-eonet"}
     )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        log.error("HTTP %d from %s: %s", e.code, url, e.reason)
-        raise
+    last_err = None
+    for attempt in range(1, HTTP_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECS) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500 and e.code != 429:
+                log.error("HTTP %d from %s: %s", e.code, url, e.reason)
+                raise
+            last_err = e
+            log.warning("attempt %d/%d: HTTP %d from %s, retrying in %ds",
+                        attempt, HTTP_RETRIES, e.code, url,
+                        HTTP_RETRY_WAIT_SECS * attempt)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last_err = e
+            log.warning("attempt %d/%d: %s from %s, retrying in %ds",
+                        attempt, HTTP_RETRIES, e, url,
+                        HTTP_RETRY_WAIT_SECS * attempt)
+        if attempt < HTTP_RETRIES:
+            time.sleep(HTTP_RETRY_WAIT_SECS * attempt)
+    raise RuntimeError(f"giving up on {url} after {HTTP_RETRIES} attempts: {last_err}")
 
 
 def flatten_events(events, snapshot):
